@@ -1,0 +1,39 @@
+{
+  "name": "@gpt-image-canvas/api",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "pnpm --filter @gpt-image-canvas/shared build && tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "db:generate": "drizzle-kit generate",
+    "smoke:agent": "tsx src/smoke/agent-smoke.ts",
+    "smoke:executor": "tsx src/smoke/agent-executor-smoke.ts",
+    "smoke:planner": "tsx src/smoke/agent-planner-smoke.ts",
+    "typecheck": "pnpm --filter @gpt-image-canvas/shared build && tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@gpt-image-canvas/shared": "workspace:^",
+    "@hono/node-server": "^2.0.0",
+    "@langchain/anthropic": "^1.3.28",
+    "@langchain/openai": "^1.4.5",
+    "better-sqlite3": "^12.9.0",
+    "cos-nodejs-sdk-v5": "^2.15.4",
+    "deepagents": "^1.9.0",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.15",
+    "openai": "^6.34.0",
+    "sharp": "^0.34.5",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/ws": "^8.18.1",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0"
+  }
+}

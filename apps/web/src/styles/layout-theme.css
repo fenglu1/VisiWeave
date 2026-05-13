@@ -1,0 +1,51 @@
+.app-root {
+  background: var(--paper);
+}
+
+.top-navigation {
+  border-bottom-color: var(--line);
+  background: rgb(255 253 248 / 0.96);
+  box-shadow: 0 1px 0 rgb(21 17 13 / 0.04);
+  color: var(--ink);
+}
+
+.top-navigation__inner {
+  padding: 0 1.15rem;
+}
+
+.top-navigation__links {
+  border-color: var(--line);
+  background: #f1e6d6;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.72);
+}
+
+.top-navigation__link {
+  min-width: 5.25rem;
+  border-radius: 6px;
+  color: var(--muted-ink);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.top-navigation__link:hover {
+  color: var(--ink);
+}
+
+.top-navigation__link[data-active="true"] {
+  background: var(--paper-panel);
+  box-shadow: 0 8px 18px rgb(92 63 35 / 0.12);
+  color: var(--accent-dark);
+}
+
+.top-navigation__settings {
+  border-color: var(--line);
+  background: var(--paper-panel);
+  color: var(--muted-ink);
+  box-shadow: 0 8px 18px rgb(92 63 35 / 0.1);
+}
+
+.top-navigation__settings:hover {
+  border-color: var(--focus);
+  background: #eefbf7;
+  color: #0f5f58;
+}

@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ai-panel-width: clamp(380px, 28vw, 440px);
+  --app-nav-height: 3.75rem;
+  --brand-blue: #c65f32;
+  --brand-blue-dark: #7e321a;
+  --brand-cyan: #0f766e;
+  --brand-cyan-soft: #d9fbf4;
+  --brand-ink: #15110d;
+  --paper: #f7f0e5;
+  --paper-soft: #fbf7ef;
+  --paper-panel: #fffdf8;
+  --canvas-paper: #fff7e6;
+  --canvas-paper-grid: rgb(126 50 26 / 0.18);
+  --ink: #15110d;
+  --muted-ink: #6f665c;
+  --line: #e5d7c3;
+  --line-strong: #cbb79a;
+  --accent: #c65f32;
+  --accent-dark: #7e321a;
+  --focus: #0f766e;
+  --focus-soft: #d9fbf4;
+  --danger: #b42318;
+  --success: #0f766e;
+  --warning: #9a5b00;
+  --image-outline: rgba(0, 0, 0, 0.1);
+  --shadow-soft: 0 18px 44px rgb(51 36 24 / 0.12);
+  --shadow-lift: 0 28px 70px rgb(51 36 24 / 0.18);
+  --motion-duration-control: 150ms;
+  --motion-duration-swap: 200ms;
+  --motion-duration-panel: 260ms;
+  --motion-duration-close: 160ms;
+  --motion-duration-pop: 320ms;
+  --motion-ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-close: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-ease-pop: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --motion-scale-press: 0.96;
+  --motion-scale-popover: 0.96;
+  --motion-scale-icon-start: 0.25;
+  --motion-blur-swap: 2px;
+  --motion-distance-compact: 8px;
+  --motion-distance-panel: 12px;
+  --font-ui: "Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-editorial: "Noto Serif SC", "Songti SC", "STSong", serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-ui);
+  color: var(--ink);
+  background: #15110d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  overflow: hidden;
+}
+
+[hidden] {
+  display: none !important;
+}
