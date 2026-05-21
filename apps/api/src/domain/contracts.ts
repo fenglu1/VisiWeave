@@ -115,3 +115,25 @@ export type {
   StylePresetId,
   ValidationResult
 } from "@gpt-image-canvas/shared";
+
+export {
+  DEFAULT_VIDEO_DURATION_SECONDS,
+  VIDEO_ASPECT_RATIOS,
+  VIDEO_DURATION_PRESETS
+} from "@gpt-image-canvas/shared";
+
+export type {
+  GenerateVideoRequest,
+  VideoAspectRatio,
+  VideoAsset,
+  VideoDurationPreset,
+  VideoGenerationJob,
+  VideoGenerationJobResponse,
+  VideoGenerationMode,
+  VideoGenerationOutput,
+  VideoGenerationStatus,
+  VideoLibraryItem,
+  VideoLibraryResponse,
+  VideoProviderStatus,
+  VideoProviderStatusResponse
+} from "@gpt-image-canvas/shared";

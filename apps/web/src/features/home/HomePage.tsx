@@ -1,7 +1,10 @@
 import {
   ArrowRight,
   CheckCircle2,
+  Clapperboard,
+  Film,
   ImageIcon,
+  ImagePlus,
   KeyRound,
   Loader2,
   ShieldCheck,
@@ -79,6 +82,23 @@ export function HomePage({
     t("homeTrustRecover"),
     t("homeTrustGallery")
   ];
+  const modalityItems = [
+    {
+      copy: t("homeModeTextToImageCopy"),
+      icon: ImagePlus,
+      title: t("homeModeTextToImageTitle")
+    },
+    {
+      copy: t("homeModeTextToVideoCopy"),
+      icon: Clapperboard,
+      title: t("homeModeTextToVideoTitle")
+    },
+    {
+      copy: t("homeModeImageToVideoCopy"),
+      icon: Film,
+      title: t("homeModeImageToVideoTitle")
+    }
+  ];
   const plateSteps = workflowSteps.map((step) => step.title);
   const wireItems = [t("homeWirePrompt"), t("homeWireReference"), t("homeWireProvider"), t("homeWireGallery")];
 
@@ -131,6 +151,23 @@ export function HomePage({
               {authError}
             </p>
           ) : null}
+
+          <div className="home-mode-strip" aria-label={t("homeModesAria")}>
+            {modalityItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <span className="home-mode-pill" key={item.title}>
+                  <span className="home-mode-pill__icon">
+                    <Icon className="size-4" aria-hidden="true" />
+                  </span>
+                  <span>
+                    <b>{item.title}</b>
+                    {item.copy}
+                  </span>
+                </span>
+              );
+            })}
+          </div>
 
           <ol className="home-proof-line" aria-label={t("homeProofAria")}>
             {proofItems.map((item) => (

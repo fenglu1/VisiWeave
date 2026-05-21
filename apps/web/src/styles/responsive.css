@@ -42,15 +42,31 @@
 @media (max-width: 767px) {
   .top-navigation__inner {
     gap: 0.6rem;
+    overflow: hidden;
     padding: 0 0.75rem;
   }
 
+  .top-navigation__actions {
+    flex: 1 1 auto;
+    gap: 0.35rem;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    padding-bottom: 0.1rem;
+    scrollbar-width: none;
+  }
+
+  .top-navigation__actions::-webkit-scrollbar {
+    display: none;
+  }
+
   .top-navigation__link {
-    min-width: 3.9rem;
-    padding: 0 0.5rem;
+    min-width: 0;
+    padding: 0 0.42rem;
+    font-size: 0.78rem;
   }
 
   .top-navigation__links {
+    flex: 0 0 auto;
     gap: 0.22rem;
     padding: 0.18rem;
   }
@@ -62,6 +78,10 @@
   .language-switcher__button {
     min-width: 2.15rem;
     padding: 0 0.36rem;
+  }
+
+  .top-navigation__theme-toggle {
+    padding: 0 0.55rem;
   }
 
   .top-navigation .brand-lockup {
@@ -76,6 +96,10 @@
   .top-navigation .brand-name {
     padding-bottom: 0.18rem;
     font-size: 0.9rem;
+  }
+
+  .top-navigation .brand-name__secondary {
+    max-width: 5rem;
   }
 
   .gallery-page__inner {
@@ -125,7 +149,7 @@
   .gallery-card__actions,
   .gallery-feature .gallery-card__actions {
     width: 100%;
-    grid-template-columns: repeat(4, minmax(2.75rem, 1fr));
+    grid-template-columns: repeat(5, minmax(2.5rem, 1fr));
   }
 
   .gallery-icon-action {
@@ -333,16 +357,22 @@
     gap: 0.45rem;
   }
 
-  .top-navigation .brand-name {
+  .top-navigation__actions {
+    min-width: 0;
+  }
+
+  .top-navigation .brand-name__divider,
+  .top-navigation .brand-name__secondary,
+  .top-navigation .brand-tagline {
     display: none;
   }
 
   .top-navigation__link {
-    min-width: 3.25rem;
+    min-width: 2.45rem;
     height: 2rem;
     gap: 0.24rem;
-    font-size: 0.76rem;
-    padding: 0 0.38rem;
+    font-size: 0.7rem;
+    padding: 0 0.32rem;
   }
 
   .top-navigation__link svg {
@@ -361,6 +391,17 @@
     min-width: 2.2rem;
     height: 2rem;
     padding: 0;
+  }
+
+  .top-navigation__theme-toggle {
+    width: 2.2rem;
+    min-width: 2.2rem;
+    height: 2rem;
+    padding: 0;
+  }
+
+  .top-navigation__theme-toggle-label {
+    display: none;
   }
 
   .top-navigation__settings span {

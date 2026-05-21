@@ -45,12 +45,14 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  width: 2rem;
-  height: 2rem;
+  width: 2.15rem;
+  height: 2.15rem;
   flex: none;
-  border-radius: 0.55rem;
+  border-radius: 0.7rem;
   background: rgb(255 253 248 / 0.72);
-  box-shadow: 0 10px 22px rgb(126 50 26 / 0.18);
+  box-shadow:
+    0 10px 24px rgb(126 50 26 / 0.2),
+    inset 0 0 0 1px rgb(21 17 13 / 0.08);
 }
 
 .brand-mark::before {
@@ -74,13 +76,42 @@
 }
 
 .brand-name {
+  display: flex;
   overflow: hidden;
+  max-width: 15rem;
+  align-items: baseline;
+  gap: 0.28rem;
   color: var(--brand-ink);
-  font-size: 0.875rem;
-  font-weight: 750;
+  font-size: 0.92rem;
+  font-weight: 900;
   line-height: 1.1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.brand-name__primary {
+  min-width: 0;
+  color: var(--brand-ink);
+  font-family: var(--font-editorial);
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brand-name__divider {
+  color: rgb(126 50 26 / 0.42);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.brand-name__secondary {
+  min-width: 0;
+  color: var(--focus);
+  font-size: 0.78rem;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand-tagline {

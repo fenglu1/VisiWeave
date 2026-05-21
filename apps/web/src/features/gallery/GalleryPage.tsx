@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   ImageIcon,
+  ImagePlay,
   Loader2,
   Maximize2,
   Palette,
@@ -28,18 +29,20 @@ import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "
 import { assetDownloadUrl, assetPreviewUrl } from "../../shared/api/assets";
 
 interface GalleryPageProps {
+  onCreateVideo?: (item: GalleryImageItem) => void;
   onDeleted: (outputId: string) => void;
   onReuse: (item: GalleryImageItem) => void;
 }
 
 interface GalleryActionHandlers {
   onCopy: (item: GalleryImageItem) => void;
+  onCreateVideo?: (item: GalleryImageItem) => void;
   onDelete: (item: GalleryImageItem) => void;
   onDownload: (item: GalleryImageItem) => void;
   onReuse: (item: GalleryImageItem) => void;
 }
 
-export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
+export function GalleryPage({ onCreateVideo, onDeleted, onReuse }: GalleryPageProps) {
   const { locale, t } = useI18n();
   const [items, setItems] = useState<GalleryImageItem[]>([]);
   const [query, setQuery] = useState("");
@@ -139,6 +142,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   const gridItems = featuredItem ? filteredItems.slice(1) : filteredItems;
   const actionHandlers: GalleryActionHandlers = {
     onCopy: (item) => void copyPrompt(item),
+    onCreateVideo,
     onDelete: requestDelete,
     onDownload: downloadItem,
     onReuse
@@ -310,6 +314,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
           onCopy={() => void copyPrompt(selectedItem)}
           onDelete={() => requestDelete(selectedItem)}
           onDownload={() => downloadItem(selectedItem)}
+          onCreateVideo={onCreateVideo ? () => onCreateVideo(selectedItem) : undefined}
           onReuse={() => onReuse(selectedItem)}
         />
       ) : null}
@@ -479,6 +484,7 @@ function GalleryIconActions({
   deleting,
   item,
   onCopy,
+  onCreateVideo,
   onDelete,
   onDownload,
   onReuse
@@ -523,6 +529,17 @@ function GalleryIconActions({
       >
         <RotateCcw className="size-4" aria-hidden="true" />
       </button>
+      {onCreateVideo ? (
+        <button
+          aria-label={t("galleryActionCreateVideo", { excerpt })}
+          className="gallery-icon-action gallery-icon-action--video"
+          title={t("galleryCreateVideo")}
+          type="button"
+          onClick={() => onCreateVideo(item)}
+        >
+          <ImagePlay className="size-4" aria-hidden="true" />
+        </button>
+      ) : null}
       <button
         aria-label={t("galleryActionDeleteImage", { excerpt })}
         className="gallery-icon-action gallery-icon-action--danger"
@@ -602,6 +619,7 @@ function GalleryDetailDialog({
   item,
   onClose,
   onCopy,
+  onCreateVideo,
   onDelete,
   onDownload,
   onReuse
@@ -611,6 +629,7 @@ function GalleryDetailDialog({
   item: GalleryImageItem;
   onClose: () => void;
   onCopy: () => void;
+  onCreateVideo?: () => void;
   onDelete: () => void;
   onDownload: () => void;
   onReuse: () => void;
@@ -685,6 +704,12 @@ function GalleryDetailDialog({
             <RotateCcw className="size-4" aria-hidden="true" />
             {t("commonReuse")}
           </button>
+          {onCreateVideo ? (
+            <button className="secondary-action h-10 gallery-video-action" type="button" onClick={onCreateVideo}>
+              <ImagePlay className="size-4" aria-hidden="true" />
+              {t("galleryCreateVideo")}
+            </button>
+          ) : null}
           <button className="secondary-action h-10 text-red-700 hover:text-red-800" disabled={deleting} type="button" onClick={onDelete}>
             {deleting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Trash2 className="size-4" aria-hidden="true" />}
             {t("commonRemove")}

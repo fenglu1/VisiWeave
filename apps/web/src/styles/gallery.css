@@ -375,9 +375,9 @@
 
 .gallery-card__actions {
   display: grid;
-  width: 9.8rem;
+  width: 12.25rem;
   flex: none;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.35rem;
 }
 
@@ -419,6 +419,17 @@
 
 .gallery-icon-action--danger {
   color: #b91c1c;
+}
+
+.gallery-icon-action--video,
+.gallery-video-action {
+  color: #0369a1;
+}
+
+.gallery-icon-action--video:hover {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+  color: #075985;
 }
 
 .gallery-icon-action--danger:hover {
@@ -530,7 +541,7 @@
 
 .gallery-modal__actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border-top: 1px solid #e2e8f0;
   border-bottom: 0;
   background: #f8fafc;

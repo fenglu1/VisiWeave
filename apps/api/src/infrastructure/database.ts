@@ -150,11 +150,40 @@ CREATE TABLE IF NOT EXISTS generation_reference_assets (
   PRIMARY KEY (generation_id, position)
 );
 
+CREATE TABLE IF NOT EXISTS video_generation_records (
+  id TEXT PRIMARY KEY NOT NULL,
+  mode TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  effective_prompt TEXT NOT NULL,
+  duration_seconds INTEGER NOT NULL,
+  aspect_ratio TEXT NOT NULL,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error TEXT,
+  reference_asset_id TEXT REFERENCES assets(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS video_generation_outputs (
+  id TEXT PRIMARY KEY NOT NULL,
+  generation_id TEXT NOT NULL REFERENCES video_generation_records(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  asset_id TEXT REFERENCES assets(id),
+  error TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS generation_records_created_at_idx ON generation_records(created_at);
 CREATE INDEX IF NOT EXISTS generation_outputs_generation_id_idx ON generation_outputs(generation_id);
 CREATE INDEX IF NOT EXISTS generation_outputs_asset_id_idx ON generation_outputs(asset_id);
 CREATE INDEX IF NOT EXISTS generation_reference_assets_generation_id_idx ON generation_reference_assets(generation_id);
 CREATE INDEX IF NOT EXISTS generation_reference_assets_asset_id_idx ON generation_reference_assets(asset_id);
+CREATE INDEX IF NOT EXISTS video_generation_records_created_at_idx ON video_generation_records(created_at);
+CREATE INDEX IF NOT EXISTS video_generation_outputs_generation_id_idx ON video_generation_outputs(generation_id);
+CREATE INDEX IF NOT EXISTS video_generation_outputs_asset_id_idx ON video_generation_outputs(asset_id);
 `);
 
 ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");

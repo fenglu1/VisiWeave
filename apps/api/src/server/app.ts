@@ -14,6 +14,7 @@ import { registerImageRoutes } from "./routes/images.js";
 import { registerProjectRoutes } from "./routes/project.js";
 import { registerProviderConfigRoutes } from "./routes/provider-config.js";
 import { registerStorageRoutes } from "./routes/storage.js";
+import { registerVideoRoutes } from "./routes/videos.js";
 
 export const agentWebSocketServer = new WebSocketServer({ noServer: true });
 export const app = createApp();
@@ -35,6 +36,7 @@ export function createApp(): Hono {
   registerStorageRoutes(app);
   registerAssetRoutes(app);
   registerImageRoutes(app);
+  registerVideoRoutes(app);
   registerAgentWebSocketRoutes(app);
 
   const webDistRoot = relative(process.cwd(), runtimePaths.webDistDir) || ".";

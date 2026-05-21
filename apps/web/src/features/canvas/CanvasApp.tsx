@@ -6,26 +6,30 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleStop,
+  Clapperboard,
   Cloud,
   Copy,
   Download,
   ExternalLink,
   ImageIcon,
+  Library,
   KeyRound,
   Loader2,
   LogOut,
   MapPin,
   MessageCirclePlus,
+  Moon,
   RotateCcw,
   Send,
   Settings,
   ShieldCheck,
   Sparkles,
   Square,
+  SunMedium,
   X,
   XCircle
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal } from "react-dom";
 import {
   DefaultSnapIndicator,
@@ -44,7 +48,6 @@ import {
   type TldrawOptions,
   type TLUserPreferences,
   type TLSnapIndicatorProps,
-  useIsDarkMode,
   useEditor,
   useTldrawUser,
   useValue
@@ -116,6 +119,7 @@ import {
 } from "@gpt-image-canvas/shared";
 import { LOCALES, localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 import { assetDownloadUrl, assetPreviewUrl } from "../../shared/api/assets";
+import { resolveInitialTheme, THEME_STORAGE_KEY, type AppTheme } from "../../shared/theme";
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
 const AGENT_SOCKET_PING_INTERVAL_MS = 15_000;
@@ -274,8 +278,58 @@ function preloadGalleryPage(): void {
   void loadGalleryPageModule();
 }
 
+interface CreativeVideoInitialReference {
+  mode: "image_to_video";
+  assetId: string;
+  outputId: string;
+  prompt: string;
+  previewUrl: string;
+  downloadUrl: string;
+  width: number;
+  height: number;
+}
+
+interface CreativeVideoPageProps {
+  initialPrompt?: string;
+  initialReferenceAssetId?: string;
+  onClearInitialReference?: () => void;
+  onOpenVideoLibrary: () => void;
+}
+
+type CreativeVideoPageModule = { default: ComponentType<CreativeVideoPageProps> };
+let creativeVideoPageModulePromise: Promise<CreativeVideoPageModule> | undefined;
+
+function loadCreativeVideoPageModule(): Promise<CreativeVideoPageModule> {
+  creativeVideoPageModulePromise ??= import("../video/CreativeVideoPage").then((module) => ({
+    default: module.CreativeVideoPage as ComponentType<CreativeVideoPageProps>
+  }));
+  return creativeVideoPageModulePromise;
+}
+
+const LazyCreativeVideoPage = lazy(loadCreativeVideoPageModule);
+
+function preloadCreativeVideoPage(): void {
+  void loadCreativeVideoPageModule();
+}
+
+type VideoLibraryPageModule = { default: ComponentType };
+let videoLibraryPageModulePromise: Promise<VideoLibraryPageModule> | undefined;
+
+function loadVideoLibraryPageModule(): Promise<VideoLibraryPageModule> {
+  videoLibraryPageModulePromise ??= import("../video/VideoLibraryPage").then((module) => ({
+    default: module.VideoLibraryPage as ComponentType
+  }));
+  return videoLibraryPageModulePromise;
+}
+
+const LazyVideoLibraryPage = lazy(loadVideoLibraryPageModule);
+
+function preloadVideoLibraryPage(): void {
+  void loadVideoLibraryPageModule();
+}
+
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
-type AppRoute = "home" | "canvas" | "gallery";
+type AppRoute = "home" | "canvas" | "gallery" | "creative-video" | "video-library";
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
 type PanelTab = "manual" | "agent";
@@ -517,7 +571,15 @@ function routeFromLocation(): AppRoute {
     return "canvas";
   }
 
-  return window.location.pathname === "/gallery" ? "gallery" : "home";
+  if (window.location.pathname === "/gallery") {
+    return "gallery";
+  }
+
+  if (window.location.pathname === "/creative-video") {
+    return "creative-video";
+  }
+
+  return window.location.pathname === "/video-library" ? "video-library" : "home";
 }
 
 function pathForRoute(route: AppRoute): string {
@@ -525,7 +587,15 @@ function pathForRoute(route: AppRoute): string {
     return "/canvas";
   }
 
-  return route === "gallery" ? "/gallery" : "/";
+  if (route === "gallery") {
+    return "/gallery";
+  }
+
+  if (route === "creative-video") {
+    return "/creative-video";
+  }
+
+  return route === "video-library" ? "/video-library" : "/";
 }
 
 function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
@@ -2147,33 +2217,41 @@ function SaveStatusIcon({ status }: { status: SaveStatus }) {
 function BrandMark({ className = "" }: { className?: string }) {
   return (
     <span className={`brand-mark ${className}`} aria-hidden="true">
-      <img className="brand-mark__image" src="/brand-logo.png" alt="" draggable={false} />
+      <img className="brand-mark__image" src="/brand-visiweave.svg" alt="" draggable={false} />
     </span>
   );
 }
 
 function BrandName() {
+  const { t } = useI18n();
+
   return (
-    <p className="brand-name" title="gpt-image-canvas">
-      <span className="brand-name__prefix">gpt</span>
-      <span className="brand-name__dash">-</span>
-      <span className="brand-name__image">image</span>
-      <span className="brand-name__dash">-</span>
-      <span className="brand-name__canvas">canvas</span>
+    <p className="brand-name" title={t("appBrandFull")}>
+      <span className="brand-name__primary">{t("appBrandName")}</span>
+      <span className="brand-name__divider">/</span>
+      <span className="brand-name__secondary">{t("appBrandCompanion")}</span>
     </p>
   );
 }
 
 function TopNavigation({
+  theme,
+  onToggleTheme,
   onOpenProviderConfig,
   route,
   onNavigate,
-  onPreloadGallery
+  onPreloadGallery,
+  onPreloadCreativeVideo,
+  onPreloadVideoLibrary
 }: {
+  theme: AppTheme;
+  onToggleTheme: () => void;
   onOpenProviderConfig: () => void;
   route: AppRoute;
   onNavigate: (route: AppRoute) => void;
   onPreloadGallery: () => void;
+  onPreloadCreativeVideo: () => void;
+  onPreloadVideoLibrary: () => void;
 }) {
   const { t } = useI18n();
 
@@ -2233,8 +2311,41 @@ function TopNavigation({
               <ImageIcon className="size-4" aria-hidden="true" />
               {t("navGallery")}
             </a>
+            <a
+              aria-current={route === "creative-video" ? "page" : undefined}
+              className="top-navigation__link"
+              data-active={route === "creative-video"}
+              data-testid="nav-creative-video"
+              href="/creative-video"
+              onFocus={onPreloadCreativeVideo}
+              onMouseEnter={onPreloadCreativeVideo}
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate("creative-video");
+              }}
+            >
+              <Clapperboard className="size-4" aria-hidden="true" />
+              {t("navCreativeVideo")}
+            </a>
+            <a
+              aria-current={route === "video-library" ? "page" : undefined}
+              className="top-navigation__link"
+              data-active={route === "video-library"}
+              data-testid="nav-video-library"
+              href="/video-library"
+              onFocus={onPreloadVideoLibrary}
+              onMouseEnter={onPreloadVideoLibrary}
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate("video-library");
+              }}
+            >
+              <Library className="size-4" aria-hidden="true" />
+              {t("navVideoLibrary")}
+            </a>
           </nav>
           <LanguageSwitcher />
+          <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           <button
             aria-label={t("navOpenProviderConfig")}
             className="top-navigation__settings"
@@ -2273,14 +2384,27 @@ function LanguageSwitcher() {
   );
 }
 
-function CanvasThemeSync({ onChange }: { onChange: (isDarkMode: boolean) => void }) {
-  const isDarkMode = useIsDarkMode();
+function ThemeToggle({ theme, onToggle }: { theme: AppTheme; onToggle: () => void }) {
+  const { t } = useI18n();
+  const nextTheme = theme === "dark" ? "light" : "dark";
+  const Icon = theme === "dark" ? SunMedium : Moon;
 
-  useEffect(() => {
-    onChange(isDarkMode);
-  }, [isDarkMode, onChange]);
-
-  return null;
+  return (
+    <button
+      aria-label={t("themeToggle", { theme: nextTheme === "dark" ? t("themeDark") : t("themeLight") })}
+      className="top-navigation__theme-toggle"
+      data-testid="theme-toggle"
+      data-theme={theme}
+      title={t("themeToggle", { theme: nextTheme === "dark" ? t("themeDark") : t("themeLight") })}
+      type="button"
+      onClick={onToggle}
+    >
+      <span className="top-navigation__theme-toggle-icon" aria-hidden="true">
+        <Icon className="size-4" />
+      </span>
+      <span className="top-navigation__theme-toggle-label">{theme === "dark" ? t("themeDark") : t("themeLight")}</span>
+    </button>
+  );
 }
 
 function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoading: boolean, t: Translate): {
@@ -2417,20 +2541,37 @@ function ProviderStatusPopover({
 export function App() {
   const { formatDateTime, locale, setLocale, t } = useI18n();
   const tldrawLocale = tldrawLocaleForLocale(locale);
+  const [theme, setTheme] = useState<AppTheme>(() =>
+    resolveInitialTheme({
+      storage: window.localStorage,
+      matchMedia: (query) => window.matchMedia(query)
+    })
+  );
   const [tldrawUserPreferences, setTldrawUserPreferences] = useState<TLUserPreferences>(() => ({
     id: TLDRAW_USER_ID,
     isSnapMode: CANVAS_DEFAULT_SNAP_MODE,
-    locale: tldrawLocale
+    locale: tldrawLocale,
+    colorScheme: theme
   }));
   useEffect(() => {
     setTldrawUserPreferences((currentPreferences) =>
-      currentPreferences.locale === tldrawLocale ? currentPreferences : { ...currentPreferences, locale: tldrawLocale }
+      currentPreferences.locale === tldrawLocale && currentPreferences.colorScheme === theme
+        ? currentPreferences
+        : { ...currentPreferences, colorScheme: theme, locale: tldrawLocale }
     );
-  }, [tldrawLocale]);
+  }, [theme, tldrawLocale]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Ignore storage failures; theme switching should still work in memory.
+    }
+  }, [theme]);
   const syncTldrawUserPreferences = useCallback(
     (preferences: TLUserPreferences) => {
       setTldrawUserPreferences({
         ...preferences,
+        colorScheme: theme,
         id: TLDRAW_USER_ID,
         isSnapMode: preferences.isSnapMode ?? CANVAS_DEFAULT_SNAP_MODE,
         locale: preferences.locale ?? tldrawLocale
@@ -2441,7 +2582,7 @@ export function App() {
         setLocale(nextLocale);
       }
     },
-    [locale, setLocale, tldrawLocale]
+    [locale, setLocale, theme, tldrawLocale]
   );
   const tldrawUser = useTldrawUser({
     userPreferences: tldrawUserPreferences,
@@ -2449,6 +2590,7 @@ export function App() {
   });
   const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
   const shouldAutoOpenCanvasRef = useRef(route !== "gallery");
+  const [creativeVideoInitialReference, setCreativeVideoInitialReference] = useState<CreativeVideoInitialReference | undefined>();
   const [panelTab, setPanelTab] = useState<PanelTab>("manual");
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
@@ -2505,7 +2647,6 @@ export function App() {
   const [agentThinkingType, setAgentThinkingType] = useState<AgentThinkingType>("enabled");
   const [agentReasoningEffort, setAgentReasoningEffort] = useState<AgentReasoningEffort>("high");
   const [isAgentSettingsOpen, setIsAgentSettingsOpen] = useState(false);
-  const [isCanvasDarkMode, setIsCanvasDarkMode] = useState(false);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const panelCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<Editor | null>(null);
@@ -2584,6 +2725,16 @@ export function App() {
   const dimensionValidationMessage = sizeValidationMessage(width, height, t, locale);
   const isReferenceMode = generationMode === "reference";
   const isReferenceReady = isReferenceMode && referenceSelection.status === "ready";
+  const selectedCanvasVideoReference =
+    isReferenceReady && referenceSelection.references.length === 1 && referenceSelection.references[0]?.localAssetId
+      ? referenceSelection.references[0]
+      : undefined;
+  const referenceVideoHint =
+    isReferenceReady && !selectedCanvasVideoReference
+      ? referenceSelection.references.length === 1
+        ? t("generationVideoReferenceNeedsLocalAsset")
+        : t("generationVideoReferenceSingleOnly")
+      : "";
   const referenceValidationMessage = isReferenceMode && !isReferenceReady ? referenceSelection.hint : "";
   const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage;
   const shouldShowValidation = Boolean(validationMessage);
@@ -2593,7 +2744,6 @@ export function App() {
       ({
         InFrontOfTheCanvas: () => (
           <>
-            <CanvasThemeSync onChange={setIsCanvasDarkMode} />
             <CanvasResolutionBadgeOverlay />
           </>
         ),
@@ -2617,6 +2767,9 @@ export function App() {
       }
     }
     setRoute(nextRoute);
+  }, []);
+  const toggleTheme = useCallback(() => {
+    setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"));
   }, []);
 
   const visibleHistory = useMemo(
@@ -3618,6 +3771,52 @@ export function App() {
     if (isMobileDrawer) {
       setIsAiPanelOpen(true);
     }
+  }
+
+  function createVideoFromGalleryImage(item: GalleryImageItem): void {
+    setCreativeVideoInitialReference({
+      mode: "image_to_video",
+      assetId: item.asset.id,
+      outputId: item.outputId,
+      prompt: item.prompt,
+      previewUrl: assetPreviewUrl(item.asset.id, 1024),
+      downloadUrl: assetDownloadUrl(item.asset.id),
+      width: item.asset.width,
+      height: item.asset.height
+    });
+    navigateToRoute("creative-video");
+  }
+
+  function createVideoFromCanvasReference(reference: ReferenceSelectionItem): void {
+    if (!reference.localAssetId) {
+      return;
+    }
+
+    setCreativeVideoInitialReference({
+      mode: "image_to_video",
+      assetId: reference.localAssetId,
+      outputId: `canvas-${reference.localAssetId}`,
+      prompt: prompt.trim(),
+      previewUrl: assetPreviewUrl(reference.localAssetId, 1024),
+      downloadUrl: assetDownloadUrl(reference.localAssetId),
+      width: Math.round(reference.width),
+      height: Math.round(reference.height)
+    });
+    navigateToRoute("creative-video");
+  }
+
+  function createVideoFromHistoryRecord(record: GenerationRecord, asset: GeneratedAsset): void {
+    setCreativeVideoInitialReference({
+      mode: "image_to_video",
+      assetId: asset.id,
+      outputId: `canvas-${asset.id}`,
+      prompt: record.prompt,
+      previewUrl: assetPreviewUrl(asset.id, 1024),
+      downloadUrl: assetDownloadUrl(asset.id),
+      width: asset.width,
+      height: asset.height
+    });
+    navigateToRoute("creative-video");
   }
 
   function removeGalleryOutputFromHistory(outputId: string): void {
@@ -4886,12 +5085,16 @@ export function App() {
   }
 
   return (
-    <div className="app-root" data-canvas-theme={route !== "home" && isCanvasDarkMode ? "dark" : "light"}>
+    <div className="app-root" data-canvas-theme={theme}>
       <TopNavigation
+        theme={theme}
+        onToggleTheme={toggleTheme}
         route={route}
         onNavigate={navigateToRoute}
         onOpenProviderConfig={() => setIsProviderConfigDialogOpen(true)}
+        onPreloadCreativeVideo={preloadCreativeVideoPage}
         onPreloadGallery={preloadGalleryPage}
+        onPreloadVideoLibrary={preloadVideoLibraryPage}
       />
       {route === "home" ? (
         <HomePage
@@ -5163,7 +5366,23 @@ export function App() {
                         <X className="size-3.5" aria-hidden="true" />
                         {t("generationCancelReference")}
                       </button>
+                      {selectedCanvasVideoReference ? (
+                        <button
+                          className="secondary-action h-8 shrink-0 px-2 text-xs"
+                          type="button"
+                          data-testid="reference-create-video"
+                          onClick={() => createVideoFromCanvasReference(selectedCanvasVideoReference)}
+                        >
+                          <Clapperboard className="size-3.5" aria-hidden="true" />
+                          {t("generationReferenceCreateVideo")}
+                        </button>
+                      ) : null}
                     </div>
+                  ) : null}
+                  {referenceVideoHint ? (
+                    <p className="mt-2 text-xs leading-5 text-neutral-600" data-testid="reference-video-hint">
+                      {referenceVideoHint}
+                    </p>
                   ) : null}
                 </div>
               </div>
@@ -5459,6 +5678,18 @@ export function App() {
                         >
                           <RotateCcw className="size-4" aria-hidden="true" />
                         </button>
+                        {downloadableAsset ? (
+                          <button
+                            aria-label={t("generationHistoryCreateVideo", { excerpt })}
+                            className="history-icon-action"
+                            type="button"
+                            data-testid="history-create-video"
+                            title={t("generationReferenceCreateVideo")}
+                            onClick={() => createVideoFromHistoryRecord(record, downloadableAsset)}
+                          >
+                            <Clapperboard className="size-4" aria-hidden="true" />
+                          </button>
+                        ) : null}
                         {activeTask && record.status === "running" ? (
                           <button
                             aria-label={t("historyCancelTask", { excerpt })}
@@ -6202,7 +6433,44 @@ export function App() {
             </main>
           }
         >
-          <LazyGalleryPage onDeleted={removeGalleryOutputFromHistory} onReuse={reuseGalleryImage} />
+          <LazyGalleryPage
+            onCreateVideo={createVideoFromGalleryImage}
+            onDeleted={removeGalleryOutputFromHistory}
+            onReuse={reuseGalleryImage}
+          />
+        </Suspense>
+      ) : null}
+      {route === "creative-video" ? (
+        <Suspense
+          fallback={
+            <main className="app-view video-page-loading" data-testid="creative-video-loading-page">
+              <div className="gallery-empty-state gallery-empty-state--boot" role="status">
+                <Loader2 className="size-5 animate-spin" aria-hidden="true" />
+                <p>{t("creativeVideoLoading")}</p>
+              </div>
+            </main>
+          }
+        >
+          <LazyCreativeVideoPage
+            initialPrompt={creativeVideoInitialReference?.prompt}
+            initialReferenceAssetId={creativeVideoInitialReference?.assetId}
+            onClearInitialReference={() => setCreativeVideoInitialReference(undefined)}
+            onOpenVideoLibrary={() => navigateToRoute("video-library")}
+          />
+        </Suspense>
+      ) : null}
+      {route === "video-library" ? (
+        <Suspense
+          fallback={
+            <main className="app-view video-page-loading" data-testid="video-library-loading-page">
+              <div className="gallery-empty-state gallery-empty-state--boot" role="status">
+                <Loader2 className="size-5 animate-spin" aria-hidden="true" />
+                <p>{t("videoLibraryLoading")}</p>
+              </div>
+            </main>
+          }
+        >
+          <LazyVideoLibraryPage />
         </Suspense>
       ) : null}
     </div>

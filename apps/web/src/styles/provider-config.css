@@ -1299,16 +1299,19 @@
 }
 
 .brand-name {
+  display: flex;
   position: relative;
   max-width: 100%;
+  align-items: baseline;
+  gap: 0.28rem;
   overflow: hidden;
   padding-bottom: 0.22rem;
   color: var(--ink);
   font-family: "Bodoni 72", "Didot", "Georgia", var(--font-editorial);
-  font-size: 1.05rem;
+  font-size: 0.98rem;
   font-weight: 900;
   letter-spacing: 0;
-  line-height: 0.98;
+  line-height: 1.05;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1325,35 +1328,30 @@
   transform: skewX(-18deg);
 }
 
-.brand-name span {
-  display: inline-block;
-  vertical-align: baseline;
-}
-
-.brand-name__prefix {
+.brand-name__primary {
+  min-width: 0;
+  overflow: hidden;
   color: #2c211a;
-  font-style: italic;
-  font-weight: 700;
+  font-weight: 950;
+  text-overflow: ellipsis;
 }
 
-.brand-name__image {
-  color: transparent;
-  background: linear-gradient(100deg, #7e321a 0%, #c65f32 48%, #0f766e 100%);
-  background-clip: text;
-  font-size: 1.07em;
-  -webkit-background-clip: text;
-}
-
-.brand-name__canvas {
-  color: #0f5f58;
-  font-size: 1.15em;
-  text-shadow: 0 0.08rem 0 rgb(231 177 112 / 0.36);
-}
-
-.brand-name__dash {
+.brand-name__divider {
   color: #b95b32;
-  margin: 0 0.04em;
-  transform: rotate(-10deg);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.brand-name__secondary {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f5f58;
+  font-family: var(--font-ui);
+  font-size: 0.76rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  text-shadow: 0 0.08rem 0 rgb(231 177 112 / 0.24);
 }
 
 .brand-tagline {

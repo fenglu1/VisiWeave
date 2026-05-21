@@ -51,7 +51,7 @@ function GenerationPlaceholderContent({ shape }: { shape: GenerationPlaceholderS
           {shape.props.targetWidth} x {shape.props.targetHeight}px
         </div>
         <div className="generation-placeholder-shape__copy">
-          {isFailed ? conciseError(shape.props.error, t("generationErrorDefault")) : "gpt-image-canvas"}
+          {isFailed ? conciseError(shape.props.error, t("generationErrorDefault")) : t("appBrandName")}
         </div>
       </div>
     </HTMLContainer>

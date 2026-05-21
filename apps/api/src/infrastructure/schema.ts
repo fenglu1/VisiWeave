@@ -117,6 +117,34 @@ export const generationReferenceAssets = sqliteTable("generation_reference_asset
   createdAt: text("created_at").notNull()
 });
 
+export const videoGenerationRecords = sqliteTable("video_generation_records", {
+  id: text("id").primaryKey(),
+  mode: text("mode").notNull(),
+  prompt: text("prompt").notNull(),
+  effectivePrompt: text("effective_prompt").notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  aspectRatio: text("aspect_ratio").notNull(),
+  width: integer("width").notNull(),
+  height: integer("height").notNull(),
+  provider: text("provider").notNull(),
+  status: text("status").notNull(),
+  error: text("error"),
+  referenceAssetId: text("reference_asset_id").references(() => assets.id),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const videoGenerationOutputs = sqliteTable("video_generation_outputs", {
+  id: text("id").primaryKey(),
+  generationId: text("generation_id")
+    .notNull()
+    .references(() => videoGenerationRecords.id, { onDelete: "cascade" }),
+  status: text("status").notNull(),
+  assetId: text("asset_id").references(() => assets.id),
+  error: text("error"),
+  createdAt: text("created_at").notNull()
+});
+
 export const generationRelations = relations(generationRecords, ({ many, one }) => ({
   outputs: many(generationOutputs),
   referenceAssets: many(generationReferenceAssets),
@@ -144,6 +172,25 @@ export const referenceAssetRelations = relations(generationReferenceAssets, ({ o
   }),
   asset: one(assets, {
     fields: [generationReferenceAssets.assetId],
+    references: [assets.id]
+  })
+}));
+
+export const videoGenerationRelations = relations(videoGenerationRecords, ({ many, one }) => ({
+  outputs: many(videoGenerationOutputs),
+  referenceAsset: one(assets, {
+    fields: [videoGenerationRecords.referenceAssetId],
+    references: [assets.id]
+  })
+}));
+
+export const videoOutputRelations = relations(videoGenerationOutputs, ({ one }) => ({
+  generation: one(videoGenerationRecords, {
+    fields: [videoGenerationOutputs.generationId],
+    references: [videoGenerationRecords.id]
+  }),
+  asset: one(assets, {
+    fields: [videoGenerationOutputs.assetId],
     references: [assets.id]
   })
 }));

@@ -1,13 +1,17 @@
 import {
   GENERATION_COUNTS,
+  DEFAULT_VIDEO_DURATION_SECONDS,
   IMAGE_QUALITIES,
   MAX_REFERENCE_IMAGES,
   OUTPUT_FORMATS,
   PROVIDER_SOURCE_IDS,
   SIZE_PRESETS,
   STYLE_PRESETS,
+  VIDEO_ASPECT_RATIOS,
+  VIDEO_DURATION_PRESETS,
   composePrompt,
   validateSceneImageSize,
+  type GenerateVideoRequest,
   type GenerationCount,
   type ImageQuality,
   type ImageSize,
@@ -18,9 +22,13 @@ import {
   type SaveLocalOpenAIProviderConfig,
   type SaveProviderConfigRequest,
   type SaveStorageConfigRequest,
-  type StylePresetId
+  type StylePresetId,
+  type VideoAspectRatio,
+  type VideoDurationPreset,
+  type VideoGenerationMode
 } from "../../domain/contracts.js";
 import { getStoredAssetFile } from "../../domain/generation/image-generation.js";
+import { isGeneratedImageAsset } from "../../domain/video/video-generation.js";
 import { isProviderSourceOrder } from "../../domain/providers/provider-config.js";
 import type { EditImageProviderInput, ImageProviderInput } from "../../infrastructure/providers/image-provider.js";
 import { errorResponse, type ErrorResponseBody, type ParseResult } from "./errors.js";
@@ -65,6 +73,67 @@ export function parseGeneratePayload(input: unknown): ParseResult<ImageProviderI
   return {
     ok: true,
     value: base.value
+  };
+}
+
+export function parseVideoGeneratePayload(input: unknown): ParseResult<GenerateVideoRequest> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "Video generation payload must be a JSON object.")
+    };
+  }
+
+  const prompt = input.prompt;
+  if (typeof prompt !== "string" || prompt.trim().length === 0) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_prompt", "Please enter a video prompt.")
+    };
+  }
+
+  const mode = parseVideoMode(input.mode);
+  if (!mode.ok) {
+    return mode;
+  }
+
+  const durationSeconds = parseVideoDuration(input.durationSeconds);
+  if (!durationSeconds.ok) {
+    return durationSeconds;
+  }
+
+  const aspectRatio = parseVideoAspectRatio(input.aspectRatio);
+  if (!aspectRatio.ok) {
+    return aspectRatio;
+  }
+
+  const referenceAssetId = parseOptionalString(input.referenceAssetId);
+  if (mode.value === "image_to_video") {
+    if (!referenceAssetId) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_reference_asset", "Image-to-video requires an existing generated image asset.")
+      };
+    }
+
+    const referenceAsset = getStoredAssetFile(referenceAssetId);
+    if (!referenceAsset || !referenceAsset.mimeType.startsWith("image/") || !isGeneratedImageAsset(referenceAssetId)) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_reference_asset", "Image-to-video requires an existing generated image asset.")
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      prompt: prompt.trim(),
+      mode: mode.value,
+      durationSeconds: durationSeconds.value,
+      aspectRatio: aspectRatio.value,
+      referenceAssetId: mode.value === "image_to_video" ? referenceAssetId : undefined
+    }
   };
 }
 
@@ -224,6 +293,69 @@ function parseReferenceAssetIds(input: Record<string, unknown>, referenceImageCo
   return {
     ok: true,
     value: referenceAssetIds
+  };
+}
+
+function parseVideoMode(value: unknown): ParseResult<VideoGenerationMode> {
+  if (value === undefined) {
+    return {
+      ok: true,
+      value: "text_to_video"
+    };
+  }
+
+  if (value === "text_to_video" || value === "image_to_video") {
+    return {
+      ok: true,
+      value
+    };
+  }
+
+  return {
+    ok: false,
+    error: errorResponse("invalid_video_mode", "Unsupported video generation mode.")
+  };
+}
+
+function parseVideoDuration(value: unknown): ParseResult<VideoDurationPreset> {
+  if (value === undefined) {
+    return {
+      ok: true,
+      value: DEFAULT_VIDEO_DURATION_SECONDS
+    };
+  }
+
+  if (typeof value === "number" && VIDEO_DURATION_PRESETS.includes(value as VideoDurationPreset)) {
+    return {
+      ok: true,
+      value: value as VideoDurationPreset
+    };
+  }
+
+  return {
+    ok: false,
+    error: errorResponse("invalid_video_duration", "Unsupported video duration.")
+  };
+}
+
+function parseVideoAspectRatio(value: unknown): ParseResult<VideoAspectRatio> {
+  if (value === undefined) {
+    return {
+      ok: true,
+      value: "16:9"
+    };
+  }
+
+  if (typeof value === "string" && VIDEO_ASPECT_RATIOS.includes(value as VideoAspectRatio)) {
+    return {
+      ok: true,
+      value: value as VideoAspectRatio
+    };
+  }
+
+  return {
+    ok: false,
+    error: errorResponse("invalid_video_aspect_ratio", "Unsupported video aspect ratio.")
   };
 }
 
