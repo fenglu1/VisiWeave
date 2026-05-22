@@ -5,6 +5,7 @@ import {
   Bot,
   CheckCircle2,
   Database,
+  Film,
   GripVertical,
   KeyRound,
   Loader2,
@@ -26,7 +27,8 @@ import {
   type ProviderSourceId,
   type ProviderSourceView,
   type SaveAgentLlmConfigRequest,
-  type SaveProviderConfigRequest
+  type SaveProviderConfigRequest,
+  type VideoProviderKind
 } from "@gpt-image-canvas/shared";
 import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 
@@ -55,8 +57,24 @@ interface AgentLlmFormState {
   supportsVision: boolean;
 }
 
+interface VideoProviderFormState {
+  kind: VideoProviderKind;
+  apiKey: string;
+  baseUrl: string;
+  textToVideoUrl: string;
+  imageToVideoUrl: string;
+  statusUrl: string;
+  timeoutMs: string;
+  pollIntervalMs: string;
+  ffmpegPath: string;
+  width: string;
+  height: string;
+  fps: string;
+  interpolation: string;
+}
+
 type DialogMessageTone = "success" | "error";
-type ProviderConfigTab = "image" | "agent";
+type ProviderConfigTab = "image" | "video" | "agent";
 
 interface DialogMessage {
   tone: DialogMessageTone;
@@ -78,6 +96,22 @@ const emptyAgentLlmForm: AgentLlmFormState = {
   supportsVision: false
 };
 
+const emptyVideoProviderForm: VideoProviderFormState = {
+  kind: "keyframe-image",
+  apiKey: "",
+  baseUrl: "",
+  textToVideoUrl: "",
+  imageToVideoUrl: "",
+  statusUrl: "",
+  timeoutMs: "1200000",
+  pollIntervalMs: "2000",
+  ffmpegPath: "",
+  width: "3840",
+  height: "2160",
+  fps: "24",
+  interpolation: "ffmpeg"
+};
+
 export function ProviderConfigDialog({
   isAuthLoading,
   isCodexStarting,
@@ -93,6 +127,7 @@ export function ProviderConfigDialog({
   const [sourceOrder, setSourceOrder] = useState<ProviderSourceId[]>([...PROVIDER_SOURCE_IDS]);
   const [localForm, setLocalForm] = useState<LocalProviderFormState>(emptyLocalProviderForm);
   const [agentForm, setAgentForm] = useState<AgentLlmFormState>(emptyAgentLlmForm);
+  const [videoForm, setVideoForm] = useState<VideoProviderFormState>(emptyVideoProviderForm);
   const [isLoading, setIsLoading] = useState(true);
   const [isAgentConfigLoading, setIsAgentConfigLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -107,6 +142,8 @@ export function ProviderConfigDialog({
   const activeSourceId = config?.activeSource?.id;
   const localApiKeyMask = config?.localOpenAI.apiKey.value;
   const hasSavedLocalKey = Boolean(config?.localOpenAI.apiKey.hasSecret);
+  const videoApiKeyMask = config?.video.apiKey.value;
+  const hasSavedVideoKey = Boolean(config?.video.apiKey.hasSecret);
   const agentApiKeyMask = agentConfig?.apiKey.value;
   const hasSavedAgentKey = Boolean(agentConfig?.apiKey.hasSecret);
   const codexSource = sourcesById.get("codex");
@@ -223,6 +260,21 @@ export function ProviderConfigDialog({
       model: nextConfig.localOpenAI.model,
       timeoutMs: String(nextConfig.localOpenAI.timeoutMs)
     });
+    setVideoForm({
+      kind: nextConfig.video.kind,
+      apiKey: "",
+      baseUrl: nextConfig.video.baseUrl,
+      textToVideoUrl: nextConfig.video.textToVideoUrl,
+      imageToVideoUrl: nextConfig.video.imageToVideoUrl,
+      statusUrl: nextConfig.video.statusUrl,
+      timeoutMs: String(nextConfig.video.timeoutMs),
+      pollIntervalMs: String(nextConfig.video.pollIntervalMs),
+      ffmpegPath: nextConfig.video.ffmpegPath,
+      width: String(nextConfig.video.width),
+      height: String(nextConfig.video.height),
+      fps: String(nextConfig.video.fps),
+      interpolation: nextConfig.video.interpolation
+    });
   }
 
   function applyAgentConfig(nextConfig: AgentLlmConfigView): void {
@@ -246,6 +298,14 @@ export function ProviderConfigDialog({
 
   function updateAgentForm(patch: Partial<AgentLlmFormState>): void {
     setAgentForm((current) => ({
+      ...current,
+      ...patch
+    }));
+    setMessage(null);
+  }
+
+  function updateVideoForm(patch: Partial<VideoProviderFormState>): void {
+    setVideoForm((current) => ({
       ...current,
       ...patch
     }));
@@ -348,6 +408,30 @@ export function ProviderConfigDialog({
       return;
     }
 
+    const videoTimeoutMs = Number.parseInt(videoForm.timeoutMs, 10);
+    const videoPollIntervalMs = Number.parseInt(videoForm.pollIntervalMs, 10);
+    const videoWidth = Number.parseInt(videoForm.width, 10);
+    const videoHeight = Number.parseInt(videoForm.height, 10);
+    const videoFps = Number.parseInt(videoForm.fps, 10);
+    if (
+      !Number.isInteger(videoTimeoutMs) ||
+      videoTimeoutMs <= 0 ||
+      !Number.isInteger(videoPollIntervalMs) ||
+      videoPollIntervalMs <= 0 ||
+      !Number.isInteger(videoWidth) ||
+      videoWidth <= 0 ||
+      !Number.isInteger(videoHeight) ||
+      videoHeight <= 0 ||
+      !Number.isInteger(videoFps) ||
+      videoFps <= 0
+    ) {
+      setMessage({
+        tone: "error",
+        text: t("providerVideoNumberInvalid")
+      });
+      return;
+    }
+
     const shouldPersistAgentConfig = shouldSaveAgentConfig(agentForm, hasSavedAgentKey);
     const agentTimeoutMs = Number.parseInt(agentForm.timeoutMs, 10);
     const agentApiKey = agentForm.apiKey.trim();
@@ -378,6 +462,7 @@ export function ProviderConfigDialog({
     setMessage(null);
 
     const apiKey = localForm.apiKey.trim();
+    const videoApiKey = videoForm.apiKey.trim();
     const body: SaveProviderConfigRequest = {
       sourceOrder,
       localOpenAI: {
@@ -386,6 +471,22 @@ export function ProviderConfigDialog({
         baseUrl: localForm.baseUrl.trim(),
         model: localForm.model.trim(),
         timeoutMs
+      },
+      video: {
+        kind: videoForm.kind,
+        apiKey: videoApiKey,
+        preserveApiKey: !videoApiKey && hasSavedVideoKey,
+        baseUrl: videoForm.baseUrl.trim(),
+        textToVideoUrl: videoForm.textToVideoUrl.trim(),
+        imageToVideoUrl: videoForm.imageToVideoUrl.trim(),
+        statusUrl: videoForm.statusUrl.trim(),
+        timeoutMs: videoTimeoutMs,
+        pollIntervalMs: videoPollIntervalMs,
+        ffmpegPath: videoForm.ffmpegPath.trim(),
+        width: videoWidth,
+        height: videoHeight,
+        fps: videoFps,
+        interpolation: videoForm.interpolation.trim()
       }
     };
     const agentBody: SaveAgentLlmConfigRequest | null = shouldPersistAgentConfig
@@ -514,6 +615,24 @@ export function ProviderConfigDialog({
               <span className="provider-config-tab__copy">
                 <strong>{t("providerImageModelTab")}</strong>
                 <span>{activeSourceId ? t("providerCurrent", { source: sourceLabel(activeSourceId, t) }) : t("providerCurrentNone")}</span>
+              </span>
+            </button>
+            <button
+              aria-controls="provider-config-panel-video"
+              aria-selected={activeTab === "video"}
+              className="provider-config-tab"
+              data-active={activeTab === "video"}
+              data-testid="provider-config-tab-video"
+              id="provider-config-tab-video"
+              role="tab"
+              tabIndex={activeTab === "video" ? 0 : -1}
+              type="button"
+              onClick={() => setActiveTab("video")}
+            >
+              <Film className="size-4" aria-hidden="true" />
+              <span className="provider-config-tab__copy">
+                <strong>{t("providerVideoTab")}</strong>
+                <span>{config?.video.configured ? t("providerAvailable") : t("providerUnavailable")}</span>
               </span>
             </button>
             <button
@@ -749,6 +868,204 @@ export function ProviderConfigDialog({
                     </div>
                   </details>
                 </div>
+              </div>
+            </div>
+          ) : activeTab === "video" ? (
+            <div
+              aria-labelledby="provider-config-tab-video"
+              className="provider-config-tab-panel provider-config-tab-panel--agent"
+              data-tab="video"
+              data-testid="provider-video-panel"
+              id="provider-config-panel-video"
+              key="video"
+              role="tabpanel"
+            >
+              <div className="provider-workspace provider-workspace--agent">
+                <section className="provider-overview-card" data-mode="video">
+                  <div className="provider-overview-card__copy">
+                    <span className="provider-overview-card__eyebrow">{t("providerVideoTab")}</span>
+                    <div className="provider-overview-card__headline">
+                      <span className="provider-overview-card__icon">
+                        <Film className="size-4" aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0">
+                        <h3>{videoKindLabel(videoForm.kind, t)}</h3>
+                        <p>{t("providerVideoDescription")}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="provider-overview-metrics">
+                    <ProviderMetric label={t("providerFieldAvailability")} value={config?.video.configured ? t("providerAvailable") : t("providerUnavailable")} />
+                    <ProviderMetric label={t("providerVideoSource")} value={config?.video.source === "environment" ? t("providerVideoSourceEnv") : t("providerVideoSourceLocal")} />
+                    <ProviderMetric label={t("providerVideoResolution")} value={`${videoForm.width}x${videoForm.height}`} />
+                  </div>
+                </section>
+
+                <section className="provider-detail-card provider-detail-card--agent" data-testid="provider-video-section" aria-labelledby="provider-video-title">
+                  <header className="provider-detail-card__header">
+                    <span className="provider-detail-card__icon">
+                      <Film className="size-4" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0">
+                      <h3 id="provider-video-title">{t("providerVideoTab")}</h3>
+                      <p>{t("providerVideoCardHint")}</p>
+                    </div>
+                    <ProviderAvailabilityBadge available={config?.video.configured ?? false} />
+                  </header>
+
+                  <div className="provider-form-grid">
+                    <label className="provider-field provider-field--span">
+                      <span>{t("providerVideoKind")}</span>
+                      <select
+                        className="provider-field__control"
+                        data-testid="provider-video-kind"
+                        value={videoForm.kind}
+                        onChange={(event) => updateVideoForm({ kind: event.target.value as VideoProviderKind })}
+                      >
+                        <option value="keyframe-image">{t("providerVideoKindKeyframe")}</option>
+                        <option value="custom-http">{t("providerVideoKindCustomHttp")}</option>
+                      </select>
+                    </label>
+                    <label className="provider-field provider-field--span">
+                      <span>API Key</span>
+                      <input
+                        autoComplete="off"
+                        className="provider-field__control"
+                        data-testid="provider-video-api-key"
+                        name="videoProviderKey"
+                        placeholder={videoApiKeyMask ? t("providerVideoApiKeySaved", { mask: videoApiKeyMask }) : t("providerVideoApiKeyPlaceholder")}
+                        type="password"
+                        value={videoForm.apiKey}
+                        onChange={(event) => updateVideoForm({ apiKey: event.target.value })}
+                      />
+                    </label>
+                    <label className="provider-field provider-field--span">
+                      <span>{videoForm.kind === "keyframe-image" ? t("providerVideoImageBaseUrl") : t("providerFieldBaseUrl")}</span>
+                      <input
+                        className="provider-field__control"
+                        data-testid="provider-video-base-url"
+                        name="videoProviderBaseUrl"
+                        placeholder={videoForm.kind === "keyframe-image" ? t("providerBaseUrlPlaceholder") : t("providerVideoBaseUrlPlaceholder")}
+                        value={videoForm.baseUrl}
+                        onChange={(event) => updateVideoForm({ baseUrl: event.target.value })}
+                      />
+                    </label>
+                    {videoForm.kind === "custom-http" ? (
+                      <>
+                        <label className="provider-field provider-field--span">
+                          <span>{t("providerVideoTextUrl")}</span>
+                          <input
+                            className="provider-field__control"
+                            data-testid="provider-video-text-url"
+                            name="videoProviderTextUrl"
+                            placeholder={t("providerVideoTextUrlPlaceholder")}
+                            value={videoForm.textToVideoUrl}
+                            onChange={(event) => updateVideoForm({ textToVideoUrl: event.target.value })}
+                          />
+                        </label>
+                        <label className="provider-field provider-field--span">
+                          <span>{t("providerVideoImageUrl")}</span>
+                          <input
+                            className="provider-field__control"
+                            data-testid="provider-video-image-url"
+                            name="videoProviderImageUrl"
+                            placeholder={t("providerVideoImageUrlPlaceholder")}
+                            value={videoForm.imageToVideoUrl}
+                            onChange={(event) => updateVideoForm({ imageToVideoUrl: event.target.value })}
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <label className="provider-field provider-field--span">
+                        <span>FFmpeg</span>
+                        <input
+                          className="provider-field__control"
+                          data-testid="provider-video-ffmpeg-path"
+                          name="videoProviderFfmpegPath"
+                          placeholder="ffmpeg"
+                          value={videoForm.ffmpegPath}
+                          onChange={(event) => updateVideoForm({ ffmpegPath: event.target.value })}
+                        />
+                      </label>
+                    )}
+                    <label className="provider-field">
+                      <span>{t("providerTimeoutMs")}</span>
+                      <input
+                        className="provider-field__control"
+                        data-testid="provider-video-timeout"
+                        min={1}
+                        name="videoProviderTimeout"
+                        type="number"
+                        value={videoForm.timeoutMs}
+                        onChange={(event) => updateVideoForm({ timeoutMs: event.target.value })}
+                      />
+                    </label>
+                    <label className="provider-field">
+                      <span>{t("providerVideoPollInterval")}</span>
+                      <input
+                        className="provider-field__control"
+                        data-testid="provider-video-poll-interval"
+                        min={1}
+                        name="videoProviderPollInterval"
+                        type="number"
+                        value={videoForm.pollIntervalMs}
+                        onChange={(event) => updateVideoForm({ pollIntervalMs: event.target.value })}
+                      />
+                    </label>
+                    <label className="provider-field">
+                      <span>{t("providerVideoWidth")}</span>
+                      <input
+                        className="provider-field__control"
+                        data-testid="provider-video-width"
+                        min={1}
+                        name="videoProviderWidth"
+                        type="number"
+                        value={videoForm.width}
+                        onChange={(event) => updateVideoForm({ width: event.target.value })}
+                      />
+                    </label>
+                    <label className="provider-field">
+                      <span>{t("providerVideoHeight")}</span>
+                      <input
+                        className="provider-field__control"
+                        data-testid="provider-video-height"
+                        min={1}
+                        name="videoProviderHeight"
+                        type="number"
+                        value={videoForm.height}
+                        onChange={(event) => updateVideoForm({ height: event.target.value })}
+                      />
+                    </label>
+                    <label className="provider-field">
+                      <span>FPS</span>
+                      <input
+                        className="provider-field__control"
+                        data-testid="provider-video-fps"
+                        min={1}
+                        name="videoProviderFps"
+                        type="number"
+                        value={videoForm.fps}
+                        onChange={(event) => updateVideoForm({ fps: event.target.value })}
+                      />
+                    </label>
+                    <label className="provider-field">
+                      <span>{t("providerVideoInterpolation")}</span>
+                      <input
+                        className="provider-field__control"
+                        data-testid="provider-video-interpolation"
+                        name="videoProviderInterpolation"
+                        value={videoForm.interpolation}
+                        onChange={(event) => updateVideoForm({ interpolation: event.target.value })}
+                      />
+                    </label>
+                  </div>
+                  {hasSavedVideoKey && !videoForm.apiKey ? (
+                    <div className="provider-secret-pill">
+                      <KeyRound className="size-3.5 shrink-0" aria-hidden="true" />
+                      {t("providerVideoApiKeySaved", { mask: videoApiKeyMask ?? "" })}
+                    </div>
+                  ) : null}
+                </section>
               </div>
             </div>
           ) : (
@@ -1024,6 +1341,10 @@ function providerOverviewCopy(sourceId: ProviderSourceId | undefined, t: Transla
   }
 
   return t("providerStatusNoneCopy");
+}
+
+function videoKindLabel(kind: VideoProviderKind, t: Translate): string {
+  return kind === "custom-http" ? t("providerVideoKindCustomHttp") : t("providerVideoKindKeyframe");
 }
 
 function shouldSaveAgentConfig(form: AgentLlmFormState, hasSavedApiKey: boolean): boolean {

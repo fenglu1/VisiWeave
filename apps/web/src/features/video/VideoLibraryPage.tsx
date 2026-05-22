@@ -11,13 +11,40 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { type VideoLibraryItem, type VideoLibraryResponse } from "@gpt-image-canvas/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type VideoBatchDeleteResponse,
+  type VideoGenerationStatus,
+  type VideoLibraryItem,
+  type VideoLibraryResponse
+} from "@gpt-image-canvas/shared";
 import { assetDownloadUrl } from "../../shared/api/assets";
 import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 
+const VIDEO_LIBRARY_REFRESH_INTERVAL_MS = 2000;
+
 export interface VideoLibraryPageProps {
   onDeleted?: (outputId: string) => void;
+}
+
+type VideoProgressFields = {
+  progress?: unknown;
+  progressPercent?: unknown;
+  progressStage?: unknown;
+  percent?: unknown;
+  percentage?: unknown;
+  phase?: unknown;
+  progressMessage?: unknown;
+  stage?: unknown;
+  stageLabel?: unknown;
+  stageMessage?: unknown;
+  updatedAt?: unknown;
+};
+
+interface VideoProgressDisplay {
+  elapsedMs: number;
+  percent: number;
+  stageText: string;
 }
 
 export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
@@ -29,19 +56,25 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
   const [statusMessage, setStatusMessage] = useState("");
   const [copiedOutputId, setCopiedOutputId] = useState<string | null>(null);
   const [deletingOutputId, setDeletingOutputId] = useState<string | null>(null);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [selectedOutputIds, setSelectedOutputIds] = useState<string[]>([]);
   const [selectedItem, setSelectedItem] = useState<VideoLibraryItem | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const selectedItemForRender = selectedItem
+    ? items.find((item) => item.outputId === selectedItem.outputId) ?? selectedItem
+    : null;
   const statusTimerRef = useRef<number | undefined>();
   const copiedTimerRef = useRef<number | undefined>();
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function loadVideos(): Promise<void> {
-      setIsLoading(true);
-      setError("");
+  const loadVideos = useCallback(
+    async ({ signal, silent = false }: { signal?: AbortSignal; silent?: boolean } = {}): Promise<void> => {
+      if (!silent) {
+        setIsLoading(true);
+        setError("");
+      }
 
       try {
-        const response = await fetch("/api/videos", { signal: controller.signal });
+        const response = await fetch("/api/videos", { signal });
         if (!response.ok) {
           throw new Error(await readVideoLibraryError(response, locale, t));
         }
@@ -51,26 +84,33 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
           throw new Error(t("videoLibraryInvalidData"));
         }
 
-        if (!controller.signal.aborted) {
+        if (!signal?.aborted) {
           setItems(body.items);
+          if (silent) {
+            setError("");
+          }
         }
       } catch (loadError) {
-        if (!controller.signal.aborted) {
+        if (!signal?.aborted) {
           setError(loadError instanceof Error ? loadError.message : t("videoLibraryLoadFailed"));
         }
       } finally {
-        if (!controller.signal.aborted) {
+        if (!signal?.aborted && !silent) {
           setIsLoading(false);
         }
       }
-    }
+    },
+    [locale, t]
+  );
 
-    void loadVideos();
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadVideos({ signal: controller.signal });
 
     return () => {
       controller.abort();
     };
-  }, [locale, t]);
+  }, [loadVideos]);
 
   useEffect(() => {
     return () => {
@@ -78,6 +118,21 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
       window.clearTimeout(copiedTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!items.some(isActiveVideoItem)) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      void loadVideos({ silent: true });
+      setNowMs(Date.now());
+    }, VIDEO_LIBRARY_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [items, loadVideos]);
 
   useEffect(() => {
     if (!selectedItem) {
@@ -104,6 +159,16 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
 
     return items.filter((item) => normalizeSearchText(item.prompt).includes(normalizedQuery));
   }, [items, query]);
+  const deletableOutputIds = useMemo(() => filteredItems.filter(isDeletableVideoItem).map((item) => item.outputId), [filteredItems]);
+  const selectedDeletableOutputIds = useMemo(
+    () => selectedOutputIds.filter((outputId) => deletableOutputIds.includes(outputId)),
+    [deletableOutputIds, selectedOutputIds]
+  );
+  const allDeletableSelected = deletableOutputIds.length > 0 && selectedDeletableOutputIds.length === deletableOutputIds.length;
+
+  useEffect(() => {
+    setSelectedOutputIds((current) => current.filter((outputId) => items.some((item) => item.outputId === outputId && isDeletableVideoItem(item))));
+  }, [items]);
 
   function showStatus(message: string): void {
     window.clearTimeout(statusTimerRef.current);
@@ -141,7 +206,8 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
   }
 
   async function deleteItem(item: VideoLibraryItem): Promise<void> {
-    if (!item.outputId) {
+    if (!isDeletableVideoItem(item)) {
+      setError(t("videoDeleteRunningDisabled"));
       return;
     }
     if (!window.confirm(t("videoDeleteConfirm", { prompt: promptExcerpt(item.prompt) }))) {
@@ -161,6 +227,7 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
 
       setItems((current) => current.filter((videoItem) => videoItem.outputId !== item.outputId));
       setCopiedOutputId((current) => (current === item.outputId ? null : current));
+      setSelectedOutputIds((current) => current.filter((outputId) => outputId !== item.outputId));
       setSelectedItem((current) => (current?.outputId === item.outputId ? null : current));
       onDeleted?.(item.outputId);
       showStatus(t("videoDeleted"));
@@ -168,6 +235,72 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
       setError(deleteError instanceof Error ? deleteError.message : t("videoDeleteFailed"));
     } finally {
       setDeletingOutputId(null);
+    }
+  }
+
+  function toggleItemSelection(item: VideoLibraryItem): void {
+    if (!isDeletableVideoItem(item)) {
+      return;
+    }
+
+    setSelectedOutputIds((current) =>
+      current.includes(item.outputId) ? current.filter((outputId) => outputId !== item.outputId) : [...current, item.outputId]
+    );
+  }
+
+  function selectAllDeletable(): void {
+    setSelectedOutputIds(deletableOutputIds);
+  }
+
+  function clearSelection(): void {
+    setSelectedOutputIds([]);
+  }
+
+  async function deleteSelectedItems(): Promise<void> {
+    if (selectedDeletableOutputIds.length === 0) {
+      return;
+    }
+    if (!window.confirm(t("videoBatchDeleteConfirm", { count: selectedDeletableOutputIds.length }))) {
+      return;
+    }
+
+    setBatchDeleting(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/videos/batch-delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ outputIds: selectedDeletableOutputIds })
+      });
+      if (!response.ok) {
+        throw new Error(await readVideoLibraryError(response, locale, t));
+      }
+
+      const body = (await response.json()) as VideoBatchDeleteResponse;
+      if (!isVideoBatchDeleteResponse(body)) {
+        throw new Error(t("videoBatchDeleteFailed"));
+      }
+
+      const deletedIds = new Set(body.deletedIds);
+      setItems((current) => current.filter((item) => !deletedIds.has(item.outputId)));
+      setCopiedOutputId((current) => (current && deletedIds.has(current) ? null : current));
+      setSelectedItem((current) => (current && deletedIds.has(current.outputId) ? null : current));
+      setSelectedOutputIds((current) => current.filter((outputId) => !deletedIds.has(outputId)));
+      for (const outputId of deletedIds) {
+        onDeleted?.(outputId);
+      }
+      showStatus(t("videoBatchDeleted", { count: deletedIds.size }));
+      if (body.failedIds.length > 0 || body.skippedIds.length > 0) {
+        setError(t("videoBatchDeletePartial", { count: body.failedIds.length + body.skippedIds.length }));
+      }
+      void loadVideos({ silent: true });
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : t("videoBatchDeleteFailed"));
+    } finally {
+      setBatchDeleting(false);
     }
   }
 
@@ -210,6 +343,31 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
             <p>{statusMessage}</p>
           </div>
         ) : null}
+        {!isLoading && filteredItems.length > 0 ? (
+          <section className="video-bulk-toolbar" aria-label={t("videoBatchToolbarAria")}>
+            <div>
+              <strong>{t("videoBatchSelectedCount", { count: selectedDeletableOutputIds.length })}</strong>
+              <span>{t("videoBatchDeletableCount", { count: deletableOutputIds.length })}</span>
+            </div>
+            <div className="video-bulk-toolbar__actions">
+              <button className="video-inline-button" disabled={deletableOutputIds.length === 0 || allDeletableSelected} type="button" onClick={selectAllDeletable}>
+                {t("videoBatchSelectAll")}
+              </button>
+              <button className="video-inline-button" disabled={selectedDeletableOutputIds.length === 0 || batchDeleting} type="button" onClick={clearSelection}>
+                {t("videoBatchClearSelection")}
+              </button>
+              <button
+                className="video-inline-button video-inline-button--danger"
+                disabled={selectedDeletableOutputIds.length === 0 || batchDeleting}
+                type="button"
+                onClick={() => void deleteSelectedItems()}
+              >
+                {batchDeleting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Trash2 className="size-4" aria-hidden="true" />}
+                {t("videoBatchDeleteSelected")}
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {isLoading ? (
           <div className="video-empty-state" role="status">
@@ -230,6 +388,8 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
               <article
                 aria-label={t("videoOpenDetailsAction", { prompt: promptExcerpt(item.prompt) })}
                 className="video-card"
+                data-active={isActiveVideoItem(item)}
+                data-selected={selectedOutputIds.includes(item.outputId)}
                 data-testid="video-library-card"
                 key={videoItemKey(item)}
                 role="button"
@@ -242,8 +402,21 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
                   }
                 }}
               >
+                <label
+                  className="video-card__select"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <input
+                    aria-label={t("videoSelectForDelete", { prompt: promptExcerpt(item.prompt) })}
+                    checked={selectedOutputIds.includes(item.outputId)}
+                    disabled={!isDeletableVideoItem(item) || batchDeleting}
+                    type="checkbox"
+                    onChange={() => toggleItemSelection(item)}
+                  />
+                  <span>{t("videoSelectForDeleteLabel")}</span>
+                </label>
                 <div className="video-card__media">
-                  <VideoAssetPreview item={item} />
+                  <VideoAssetPreview item={item} nowMs={nowMs} />
                 </div>
                 <div className="video-card__body">
                   <div className="video-tags">
@@ -253,6 +426,7 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
                     <span>{t("videoStatusValue", { status: item.status })}</span>
                   </div>
                   <p className="video-card__prompt">{item.prompt}</p>
+                  {isActiveVideoItem(item) ? <VideoProgressInline item={item} nowMs={nowMs} /> : null}
                   {item.error ? <p className="video-card__error">{item.error}</p> : null}
                   <div className="video-card__footer">
                     <span className="video-time-tag">
@@ -307,7 +481,7 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
                         <button
                           aria-label={t("videoDeleteAction", { prompt: promptExcerpt(item.prompt) })}
                           className="video-icon-action video-icon-action--danger"
-                          disabled={deletingOutputId === item.outputId}
+                          disabled={deletingOutputId === item.outputId || !isDeletableVideoItem(item)}
                           title={t("commonRemove")}
                           type="button"
                           onClick={(event) => {
@@ -330,10 +504,11 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
           </section>
         )}
       </div>
-      {selectedItem ? (
+      {selectedItemForRender ? (
         <VideoDetailModal
           deletingOutputId={deletingOutputId}
-          item={selectedItem}
+          item={selectedItemForRender}
+          nowMs={nowMs}
           onClose={() => setSelectedItem(null)}
           onDelete={(item) => void deleteItem(item)}
           onDownload={downloadItem}
@@ -343,11 +518,20 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
   );
 }
 
-function VideoAssetPreview({ item }: { item: VideoLibraryItem }) {
+function VideoAssetPreview({ item, nowMs }: { item: VideoLibraryItem; nowMs: number }) {
   const { t } = useI18n();
   const asset = item.asset;
 
   if (!asset) {
+    if (isActiveVideoItem(item)) {
+      return (
+        <div className="video-card__processing-preview">
+          <Loader2 className="size-6 animate-spin" aria-hidden="true" />
+          <VideoProgressInline item={item} nowMs={nowMs} compact />
+        </div>
+      );
+    }
+
     return (
       <div className="video-card__missing-preview">
         <XCircle className="size-6" aria-hidden="true" />
@@ -375,12 +559,14 @@ function VideoAssetPreview({ item }: { item: VideoLibraryItem }) {
 function VideoDetailModal({
   deletingOutputId,
   item,
+  nowMs,
   onClose,
   onDelete,
   onDownload
 }: {
   deletingOutputId: string | null;
   item: VideoLibraryItem;
+  nowMs: number;
   onClose: () => void;
   onDelete: (item: VideoLibraryItem) => void;
   onDownload: (item: VideoLibraryItem) => void;
@@ -417,6 +603,11 @@ function VideoDetailModal({
             <div className="video-modal__non-video">
               <img alt="" src={asset.url} />
               <p>{t("videoNonPlayableAssetDetail")}</p>
+            </div>
+          ) : isActiveVideoItem(item) ? (
+            <div className="video-modal__non-video">
+              <Loader2 className="size-8 animate-spin" aria-hidden="true" />
+              <VideoProgressInline item={item} nowMs={nowMs} />
             </div>
           ) : (
             <div className="video-modal__non-video">
@@ -459,7 +650,7 @@ function VideoDetailModal({
           {item.outputId ? (
             <button
               className="video-inline-button video-inline-button--danger"
-              disabled={deletingOutputId === item.outputId}
+              disabled={deletingOutputId === item.outputId || !isDeletableVideoItem(item)}
               type="button"
               onClick={() => onDelete(item)}
             >
@@ -474,6 +665,41 @@ function VideoDetailModal({
         </footer>
       </section>
     </div>
+  );
+}
+
+function VideoProgressInline({
+  compact = false,
+  item,
+  nowMs
+}: {
+  compact?: boolean;
+  item: VideoLibraryItem;
+  nowMs: number;
+}) {
+  const { t } = useI18n();
+  const progress = progressDisplayForItem(item, nowMs, t);
+
+  return (
+    <section className="video-progress-inline" data-compact={compact} aria-label={t("videoProgressInlineAria")}>
+      <div className="video-progress-inline__header">
+        <span>{progress.stageText}</span>
+        <strong>{t("videoProgressPercent", { percent: progress.percent })}</strong>
+      </div>
+      <div
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={progress.percent}
+        className="video-progress-bar"
+        role="progressbar"
+      >
+        <span style={{ width: `${progress.percent}%` }} />
+      </div>
+      <p>
+        <Clock3 className="size-3.5" aria-hidden="true" />
+        {t("videoProgressElapsed", { time: formatElapsedDuration(progress.elapsedMs, t) })}
+      </p>
+    </section>
   );
 }
 
@@ -499,6 +725,105 @@ function videoItemKey(item: VideoLibraryItem): string {
   return item.outputId || `${item.generationId}:${item.createdAt}`;
 }
 
+function isActiveVideoItem(item: VideoLibraryItem): boolean {
+  return item.status === "queued" || item.status === "running";
+}
+
+function isDeletableVideoItem(item: VideoLibraryItem): boolean {
+  return Boolean(item.outputId) && !isActiveVideoItem(item);
+}
+
+function progressDisplayForItem(item: VideoLibraryItem, nowMs: number, t: Translate): VideoProgressDisplay {
+  const progressFields = item as VideoLibraryItem & VideoProgressFields;
+  return {
+    elapsedMs: Math.max(0, nowMs - timestampMs(item.createdAt)),
+    percent: progressPercentForStatus(item.status, readProgressPercent(progressFields)),
+    stageText: readStageText(progressFields, item.status, t)
+  };
+}
+
+function readProgressPercent(value: VideoProgressFields): number | undefined {
+  const candidates = [value.progressPercent, value.percent, value.percentage, value.progress];
+  for (const candidate of candidates) {
+    const numericValue = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    if (Number.isFinite(numericValue)) {
+      return numericValue <= 1 && numericValue > 0 ? numericValue * 100 : numericValue;
+    }
+  }
+
+  return undefined;
+}
+
+function readStageText(value: VideoProgressFields, status: VideoGenerationStatus, t: Translate): string {
+  const stage = [value.stageMessage, value.progressMessage, value.stageLabel, value.progressStage, value.phase, value.stage].find(
+    (candidate) => typeof candidate === "string" && candidate.trim().length > 0
+  );
+
+  return typeof stage === "string" ? stage.trim() : fallbackStageText(status, t);
+}
+
+function fallbackStageText(status: VideoGenerationStatus, t: Translate): string {
+  switch (status) {
+    case "queued":
+      return t("videoProgressStageQueued");
+    case "running":
+      return t("videoProgressStageRunning");
+    case "succeeded":
+      return t("videoProgressStageSucceeded");
+    case "failed":
+      return t("videoProgressStageFailed");
+    case "cancelled":
+      return t("videoProgressStageCancelled");
+  }
+}
+
+function progressPercentForStatus(status: VideoGenerationStatus, progressPercent: number | undefined): number {
+  if (status === "succeeded") {
+    return 100;
+  }
+  if (status === "failed" || status === "cancelled") {
+    return clampProgressPercent(progressPercent ?? 100);
+  }
+  if (typeof progressPercent === "number") {
+    return clampProgressPercent(progressPercent);
+  }
+
+  return status === "queued" ? 8 : 35;
+}
+
+function clampProgressPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function timestampMs(value: string): number {
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function formatElapsedDuration(elapsedMs: number, t: Translate): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) {
+    return t("videoProgressElapsedSeconds", { seconds });
+  }
+
+  return t("videoProgressElapsedMinutes", { minutes, seconds });
+}
+
+function isVideoBatchDeleteResponse(value: unknown): value is VideoBatchDeleteResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    Array.isArray(value.deletedIds) &&
+    Array.isArray(value.notFoundIds) &&
+    Array.isArray(value.skippedIds) &&
+    Array.isArray(value.failedIds)
+  );
+}
+
 async function readVideoLibraryError(response: Response, locale: Locale, t: Translate): Promise<string> {
   try {
     const body = (await response.json()) as { error?: { code?: string; message?: string } };
@@ -512,6 +837,10 @@ async function readVideoLibraryError(response: Response, locale: Locale, t: Tran
   } catch {
     return t("videoLibraryRequestFailed", { status: response.status });
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function writeClipboardText(text: string): Promise<void> {

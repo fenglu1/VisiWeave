@@ -30,11 +30,60 @@ pnpm install
 Copy-Item .env.example .env
 ```
 
+Important:
+
+- `.env` is for local machine secrets and runtime configuration only.
+- Do not commit `.env`, real API keys, generated images, SQLite databases, or local runtime data.
+- Keep real provider keys in `.env` or the runtime environment; never paste them into docs, OpenSpec files, shell logs, or committed examples.
+
 If `pnpm` is not in PATH but `corepack` is available:
 
 ```powershell
 corepack prepare pnpm@9.14.2 --activate
 ```
+
+## Optional Keyframe Image Video Provider
+
+Creative Video can run through a local `keyframe-image` provider when a native video provider is not available. This mode uses the configured OpenAI-compatible image provider to generate still keyframes, then uses FFmpeg to compose a horizontal 4K MP4.
+
+Add the local values to `.env` only:
+
+```env
+VIDEO_PROVIDER_KIND=keyframe-image
+
+# Required image provider configuration for keyframe-image mode.
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+OPENAI_IMAGE_MODEL=gpt-image-2
+
+# Horizontal 4K MP4 output.
+KEYFRAME_VIDEO_WIDTH=3840
+KEYFRAME_VIDEO_HEIGHT=2160
+KEYFRAME_VIDEO_FPS=24
+KEYFRAME_VIDEO_INTERPOLATION=ffmpeg
+
+# Leave blank to use duration-based defaults.
+# 5s = 6 keyframes, 10s = 12, 20s = 24, 30s = 36.
+KEYFRAME_VIDEO_FRAME_COUNT=
+KEYFRAME_VIDEO_SECONDS=10
+
+# Defaults to ffmpeg from PATH; use an absolute path if Windows cannot find it.
+FFMPEG_PATH=ffmpeg
+```
+
+On Windows, verify FFmpeg before starting the API:
+
+```powershell
+ffmpeg -version
+```
+
+If `ffmpeg` is not on `PATH`, set `FFMPEG_PATH` to the executable path and verify it directly:
+
+```powershell
+& "C:\Tools\ffmpeg\bin\ffmpeg.exe" -version
+```
+
+For paths with spaces, keep the quotes in the PowerShell command. In `.env`, set `FFMPEG_PATH` to the actual local executable path and keep `.env` uncommitted.
 
 ## Normal Startup
 

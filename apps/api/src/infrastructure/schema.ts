@@ -48,6 +48,19 @@ export const providerConfigs = sqliteTable("provider_configs", {
   localBaseUrl: text("local_base_url"),
   localModel: text("local_model"),
   localTimeoutMs: integer("local_timeout_ms"),
+  videoKind: text("video_kind"),
+  videoApiKey: text("video_api_key"),
+  videoBaseUrl: text("video_base_url"),
+  videoTextToVideoUrl: text("video_text_to_video_url"),
+  videoImageToVideoUrl: text("video_image_to_video_url"),
+  videoStatusUrl: text("video_status_url"),
+  videoTimeoutMs: integer("video_timeout_ms"),
+  videoPollIntervalMs: integer("video_poll_interval_ms"),
+  videoFfmpegPath: text("video_ffmpeg_path"),
+  videoWidth: integer("video_width"),
+  videoHeight: integer("video_height"),
+  videoFps: integer("video_fps"),
+  videoInterpolation: text("video_interpolation"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 });
@@ -130,6 +143,9 @@ export const videoGenerationRecords = sqliteTable("video_generation_records", {
   status: text("status").notNull(),
   error: text("error"),
   referenceAssetId: text("reference_asset_id").references(() => assets.id),
+  progressPercent: integer("progress_percent").notNull(),
+  progressStage: text("progress_stage").notNull(),
+  progressMessage: text("progress_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 });

@@ -1,7 +1,16 @@
 export type VideoGenerationMode = "text_to_video" | "image_to_video";
 export type VideoGenerationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type VideoGenerationProgressStage =
+  | "queued"
+  | "running"
+  | "saving"
+  | "succeeded"
+  | "failed"
+  | "preparing"
+  | "generating_keyframes"
+  | "composing_video";
 
-export const VIDEO_DURATION_PRESETS = [5, 10, 15] as const;
+export const VIDEO_DURATION_PRESETS = [5, 10, 20, 30] as const;
 export type VideoDurationPreset = (typeof VIDEO_DURATION_PRESETS)[number];
 export const DEFAULT_VIDEO_DURATION_SECONDS = 10 as const;
 
@@ -47,6 +56,9 @@ export interface VideoGenerationJob {
   };
   provider: string;
   status: VideoGenerationStatus;
+  progressPercent: number;
+  progressStage: VideoGenerationProgressStage | string;
+  progressMessage?: string;
   error?: string;
   referenceAssetId?: string;
   createdAt: string;
@@ -84,6 +96,9 @@ export interface VideoLibraryItem {
   };
   provider: string;
   status: VideoGenerationStatus;
+  progressPercent: number;
+  progressStage: VideoGenerationProgressStage | string;
+  progressMessage?: string;
   error?: string;
   referenceAssetId?: string;
   createdAt: string;
@@ -92,4 +107,15 @@ export interface VideoLibraryItem {
 
 export interface VideoLibraryResponse {
   items: VideoLibraryItem[];
+}
+
+export interface VideoBatchDeleteRequest {
+  outputIds: string[];
+}
+
+export interface VideoBatchDeleteResponse {
+  deletedIds: string[];
+  notFoundIds: string[];
+  skippedIds: string[];
+  failedIds: string[];
 }

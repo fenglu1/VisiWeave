@@ -22,10 +22,13 @@ import {
   type SaveLocalOpenAIProviderConfig,
   type SaveProviderConfigRequest,
   type SaveStorageConfigRequest,
+  type SaveVideoProviderConfig,
   type StylePresetId,
   type VideoAspectRatio,
+  type VideoBatchDeleteRequest,
   type VideoDurationPreset,
-  type VideoGenerationMode
+  type VideoGenerationMode,
+  type VideoProviderKind
 } from "../../domain/contracts.js";
 import { getStoredAssetFile } from "../../domain/generation/image-generation.js";
 import { isGeneratedImageAsset } from "../../domain/video/video-generation.js";
@@ -133,6 +136,53 @@ export function parseVideoGeneratePayload(input: unknown): ParseResult<GenerateV
       durationSeconds: durationSeconds.value,
       aspectRatio: aspectRatio.value,
       referenceAssetId: mode.value === "image_to_video" ? referenceAssetId : undefined
+    }
+  };
+}
+
+export function parseVideoBatchDeletePayload(input: unknown): ParseResult<VideoBatchDeleteRequest> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "Video batch delete payload must be a JSON object.")
+    };
+  }
+
+  if (!Array.isArray(input.outputIds)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_output_ids", "Video batch delete outputIds must be an array.")
+    };
+  }
+
+  const outputIds: string[] = [];
+  const seen = new Set<string>();
+  for (const value of input.outputIds) {
+    const outputId = parseOptionalString(value);
+    if (!outputId) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_output_ids", "Video batch delete outputIds must contain non-empty strings.")
+      };
+    }
+
+    if (!seen.has(outputId)) {
+      seen.add(outputId);
+      outputIds.push(outputId);
+    }
+  }
+
+  if (outputIds.length === 0) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_output_ids", "Video batch delete requires at least one output id.")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      outputIds
     }
   };
 }
@@ -317,6 +367,10 @@ function parseVideoMode(value: unknown): ParseResult<VideoGenerationMode> {
   };
 }
 
+function parseVideoProviderKind(value: unknown): VideoProviderKind | undefined {
+  return value === "keyframe-image" || value === "custom-http" ? value : undefined;
+}
+
 function parseVideoDuration(value: unknown): ParseResult<VideoDurationPreset> {
   if (value === undefined) {
     return {
@@ -479,11 +533,17 @@ export function parseProviderConfigPayload(input: unknown): ParseResult<SaveProv
     return sourceOrder;
   }
 
+  const video = input.video === undefined ? undefined : parseVideoProviderConfig(input.video);
+  if (video && !video.ok) {
+    return video;
+  }
+
   if (input.localOpenAI === undefined) {
     return {
       ok: true,
       value: {
-        sourceOrder: sourceOrder.value
+        sourceOrder: sourceOrder.value,
+        video: video?.value
       }
     };
   }
@@ -497,7 +557,8 @@ export function parseProviderConfigPayload(input: unknown): ParseResult<SaveProv
     ok: true,
     value: {
       sourceOrder: sourceOrder.value,
-      localOpenAI: localOpenAI.value
+      localOpenAI: localOpenAI.value,
+      video: video?.value
     }
   };
 }
@@ -577,6 +638,62 @@ function parseLocalOpenAIProviderConfig(input: unknown): ParseResult<SaveLocalOp
       };
     }
     config.timeoutMs = timeoutMs;
+  }
+
+  return {
+    ok: true,
+    value: config
+  };
+}
+
+function parseVideoProviderConfig(input: unknown): ParseResult<SaveVideoProviderConfig> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Video provider config must be a JSON object.")
+    };
+  }
+
+  const config: SaveVideoProviderConfig = {
+    preserveApiKey: input.preserveApiKey === true
+  };
+
+  if (Object.hasOwn(input, "kind")) {
+    const kind = parseVideoProviderKind(input.kind);
+    if (!kind) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Video provider kind must be keyframe-image or custom-http.")
+      };
+    }
+    config.kind = kind;
+  }
+
+  for (const key of ["apiKey", "baseUrl", "textToVideoUrl", "imageToVideoUrl", "statusUrl", "ffmpegPath", "interpolation"] as const) {
+    if (!Object.hasOwn(input, key)) {
+      continue;
+    }
+    if (typeof input[key] !== "string") {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", `Video provider ${key} must be a string.`)
+      };
+    }
+    config[key] = input[key];
+  }
+
+  for (const key of ["timeoutMs", "pollIntervalMs", "width", "height", "fps"] as const) {
+    if (!Object.hasOwn(input, key)) {
+      continue;
+    }
+    const value = parsePositiveIntegerValue(input[key]);
+    if (!value) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", `Video provider ${key} must be a positive integer.`)
+      };
+    }
+    config[key] = value;
   }
 
   return {

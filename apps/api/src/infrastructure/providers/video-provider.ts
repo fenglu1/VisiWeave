@@ -1,8 +1,17 @@
 import type {
   GenerateVideoRequest,
   VideoGenerationMode,
+  VideoGenerationProgressStage,
   VideoProviderStatus
 } from "../../domain/contracts.js";
+import {
+  createKeyframeVideoProvider,
+  createLocalKeyframeVideoProvider,
+  getKeyframeVideoProviderStatus,
+  isKeyframeVideoProviderEnabled
+} from "./keyframe-video-provider.js";
+import { getLocalVideoProviderConfig } from "../../domain/providers/provider-config.js";
+import { DEFAULT_OPENAI_IMAGE_TIMEOUT_MS, getConfiguredImageModel } from "./image-provider.js";
 
 const DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS = 2_000;
@@ -31,12 +40,19 @@ export interface VideoProviderReferenceAsset {
   dataUrl: string;
 }
 
+export interface VideoProviderProgress {
+  progressPercent: number;
+  progressStage: VideoGenerationProgressStage | string;
+  progressMessage: string;
+}
+
 export interface VideoProviderInput extends GenerateVideoRequest {
   size: {
     width: number;
     height: number;
   };
   referenceAsset?: VideoProviderReferenceAsset;
+  onProgress?: (progress: VideoProviderProgress) => void;
 }
 
 export interface VideoProviderOutput {
@@ -44,6 +60,10 @@ export interface VideoProviderOutput {
   mimeType: string;
   fileName?: string;
   providerJobId?: string;
+  size?: {
+    width: number;
+    height: number;
+  };
 }
 
 export interface VideoProvider {
@@ -63,6 +83,34 @@ interface CustomHttpVideoProviderConfig {
 }
 
 export function getVideoProviderStatus(): VideoProviderStatus {
+  if (isKeyframeVideoProviderEnabled()) {
+    return getKeyframeVideoProviderStatus();
+  }
+
+  const localConfig = getLocalVideoProviderConfig();
+  if (localConfig) {
+    if (localConfig.kind === "keyframe-image") {
+      return {
+        id: "keyframe-image",
+        configured: true,
+        supportsTextToVideo: true,
+        supportsImageToVideo: false,
+        message: "Local keyframe image video provider is configured."
+      };
+    }
+
+    const supportsTextToVideo = Boolean(localConfig.baseUrl || localConfig.textToVideoUrl);
+    const supportsImageToVideo = Boolean(localConfig.baseUrl || localConfig.imageToVideoUrl);
+
+    return {
+      id: "custom-http",
+      configured: supportsTextToVideo || supportsImageToVideo,
+      supportsTextToVideo,
+      supportsImageToVideo,
+      message: "Local custom HTTP video provider is configured."
+    };
+  }
+
   const config = getCustomHttpVideoProviderConfig();
   const supportsTextToVideo = Boolean(config.endpointUrl || config.textToVideoUrl);
   const supportsImageToVideo = Boolean(config.endpointUrl || config.imageToVideoUrl);
@@ -90,6 +138,70 @@ export function getConfiguredVideoProvider():
       error: VideoProviderError;
       status: VideoProviderStatus;
     } {
+  if (isKeyframeVideoProviderEnabled()) {
+    const status = getKeyframeVideoProviderStatus();
+    if (!status.configured) {
+      return {
+        ok: false,
+        status,
+        error: new VideoProviderError(
+          "video_provider_not_configured",
+          "Keyframe video generation requires OPENAI_API_KEY for the image provider.",
+          503
+        )
+      };
+    }
+
+    return {
+      ok: true,
+      status,
+      provider: createKeyframeVideoProvider()
+    };
+  }
+
+  const localConfig = getLocalVideoProviderConfig();
+  if (localConfig) {
+    const status = getVideoProviderStatus();
+    if (!status.configured) {
+      return {
+        ok: false,
+        status,
+        error: new VideoProviderError(
+          "video_provider_not_configured",
+          "Video generation is not configured. Set a local video provider endpoint first.",
+          503
+        )
+      };
+    }
+
+    if (localConfig.kind === "keyframe-image") {
+      return {
+        ok: true,
+        status,
+        provider: createLocalKeyframeVideoProvider({
+          videoConfig: localConfig,
+          imageModel: getConfiguredImageModel(),
+          imageTimeoutMs: DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+        })
+      };
+    }
+
+    return {
+      ok: true,
+      status,
+      provider: new CustomHttpVideoProvider({
+        id: "custom-http",
+        endpointUrl: localConfig.baseUrl,
+        textToVideoUrl: localConfig.textToVideoUrl,
+        imageToVideoUrl: localConfig.imageToVideoUrl,
+        statusUrl: localConfig.statusUrl,
+        apiKey: localConfig.apiKey,
+        timeoutMs: localConfig.timeoutMs,
+        pollIntervalMs: localConfig.pollIntervalMs
+      })
+    };
+  }
+
   const config = getCustomHttpVideoProviderConfig();
   const status = getVideoProviderStatus();
 

@@ -34,6 +34,7 @@ import { assets, generationOutputs, generationRecords, generationReferenceAssets
 import { getActiveCosStorageConfig } from "../storage/storage-config.js";
 
 const BATCH_CONCURRENCY = 2;
+const FAILED_OUTPUT_RETRY_ATTEMPTS = 1;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 const localAssetStorage = new LocalAssetStorageAdapter();
@@ -84,11 +85,7 @@ const mimeTypes: Record<OutputFormat, string> = {
 };
 
 export async function runTextToImageGeneration(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<GenerationResponse> {
-  const outputs = await mapWithConcurrency(
-    Array.from({ length: input.count }, (_, index) => index),
-    BATCH_CONCURRENCY,
-    async () => generateSingleOutput(input, provider, signal)
-  );
+  const outputs = await generateBatchOutputs(input.count, () => generateSingleOutput(input, provider, signal));
 
   const record = saveGenerationRecord(
     {
@@ -115,11 +112,7 @@ export async function runReferenceImageGeneration(
     referenceAssetId: referenceAssetIds[0]
   };
 
-  const outputs = await mapWithConcurrency(
-    Array.from({ length: inputWithReferenceAssets.count }, (_, index) => index),
-    BATCH_CONCURRENCY,
-    async () => editSingleOutput(inputWithReferenceAssets, provider, signal)
-  );
+  const outputs = await generateBatchOutputs(inputWithReferenceAssets.count, () => editSingleOutput(inputWithReferenceAssets, provider, signal));
 
   const record = saveGenerationRecord(
     {
@@ -378,6 +371,39 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
       error: errorToMessage(error)
     };
   }
+}
+
+async function generateBatchOutputs(count: number, generateOutput: () => Promise<BatchOutputResult>): Promise<BatchOutputResult[]> {
+  const outputs = await mapWithConcurrency(
+    Array.from({ length: count }, (_, index) => index),
+    BATCH_CONCURRENCY,
+    generateOutput
+  );
+
+  return retryFailedBatchOutputs(outputs, generateOutput);
+}
+
+async function retryFailedBatchOutputs(
+  initialOutputs: BatchOutputResult[],
+  generateOutput: () => Promise<BatchOutputResult>,
+  retryAttempts = FAILED_OUTPUT_RETRY_ATTEMPTS
+): Promise<BatchOutputResult[]> {
+  let outputs = initialOutputs;
+
+  for (let attempt = 0; attempt < retryAttempts; attempt += 1) {
+    const failedOutputIndexes = outputs.flatMap((output, index) => (output.status === "failed" ? [index] : []));
+    if (failedOutputIndexes.length === 0) {
+      return outputs;
+    }
+
+    const retryOutputs = await mapWithConcurrency(failedOutputIndexes, BATCH_CONCURRENCY, generateOutput);
+    outputs = outputs.map((output, index) => {
+      const retryIndex = failedOutputIndexes.indexOf(index);
+      return retryIndex === -1 ? output : retryOutputs[retryIndex];
+    });
+  }
+
+  return outputs;
 }
 
 async function saveProviderImage(image: ProviderImage, input: ImageProviderInput, _signal?: AbortSignal): Promise<SavedProviderImage> {

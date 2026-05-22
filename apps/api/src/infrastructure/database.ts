@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   local_base_url TEXT,
   local_model TEXT,
   local_timeout_ms INTEGER,
+  video_kind TEXT,
+  video_api_key TEXT,
+  video_base_url TEXT,
+  video_text_to_video_url TEXT,
+  video_image_to_video_url TEXT,
+  video_status_url TEXT,
+  video_timeout_ms INTEGER,
+  video_poll_interval_ms INTEGER,
+  video_ffmpeg_path TEXT,
+  video_width INTEGER,
+  video_height INTEGER,
+  video_fps INTEGER,
+  video_interpolation TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -163,6 +176,9 @@ CREATE TABLE IF NOT EXISTS video_generation_records (
   status TEXT NOT NULL,
   error TEXT,
   reference_asset_id TEXT REFERENCES assets(id),
+  progress_percent INTEGER NOT NULL DEFAULT 0,
+  progress_stage TEXT NOT NULL DEFAULT 'queued',
+  progress_message TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -209,13 +225,30 @@ ensureColumn("provider_configs", "local_api_key", "local_api_key TEXT");
 ensureColumn("provider_configs", "local_base_url", "local_base_url TEXT");
 ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
+ensureColumn("provider_configs", "video_kind", "video_kind TEXT");
+ensureColumn("provider_configs", "video_api_key", "video_api_key TEXT");
+ensureColumn("provider_configs", "video_base_url", "video_base_url TEXT");
+ensureColumn("provider_configs", "video_text_to_video_url", "video_text_to_video_url TEXT");
+ensureColumn("provider_configs", "video_image_to_video_url", "video_image_to_video_url TEXT");
+ensureColumn("provider_configs", "video_status_url", "video_status_url TEXT");
+ensureColumn("provider_configs", "video_timeout_ms", "video_timeout_ms INTEGER");
+ensureColumn("provider_configs", "video_poll_interval_ms", "video_poll_interval_ms INTEGER");
+ensureColumn("provider_configs", "video_ffmpeg_path", "video_ffmpeg_path TEXT");
+ensureColumn("provider_configs", "video_width", "video_width INTEGER");
+ensureColumn("provider_configs", "video_height", "video_height INTEGER");
+ensureColumn("provider_configs", "video_fps", "video_fps INTEGER");
+ensureColumn("provider_configs", "video_interpolation", "video_interpolation TEXT");
 ensureColumn("agent_llm_configs", "api_key", "api_key TEXT");
 ensureColumn("agent_llm_configs", "base_url", "base_url TEXT NOT NULL DEFAULT ''");
 ensureColumn("agent_llm_configs", "model", "model TEXT NOT NULL DEFAULT ''");
 ensureColumn("agent_llm_configs", "timeout_ms", "timeout_ms INTEGER NOT NULL DEFAULT 60000");
 ensureColumn("agent_llm_configs", "supports_vision", "supports_vision INTEGER NOT NULL DEFAULT 0");
+ensureColumn("video_generation_records", "progress_percent", "progress_percent INTEGER NOT NULL DEFAULT 0");
+ensureColumn("video_generation_records", "progress_stage", "progress_stage TEXT NOT NULL DEFAULT 'queued'");
+ensureColumn("video_generation_records", "progress_message", "progress_message TEXT");
 
 backfillGenerationReferenceAssets();
+backfillVideoGenerationProgress();
 ensureProviderConfigRow();
 ensureAgentLlmConfigRow();
 
@@ -250,6 +283,32 @@ function backfillGenerationReferenceAssets(): void {
         FROM generation_reference_assets
         WHERE generation_reference_assets.generation_id = generation_records.id
       )
+  `);
+}
+
+function backfillVideoGenerationProgress(): void {
+  sqlite.exec(`
+    UPDATE video_generation_records
+    SET
+      progress_percent = CASE
+        WHEN status = 'succeeded' THEN 100
+        WHEN status = 'failed' THEN progress_percent
+        WHEN status = 'queued' THEN 0
+        ELSE 10
+      END,
+      progress_stage = CASE
+        WHEN status = 'succeeded' THEN 'succeeded'
+        WHEN status = 'failed' THEN 'failed'
+        WHEN status = 'queued' THEN 'queued'
+        ELSE 'running'
+      END,
+      progress_message = CASE
+        WHEN status = 'succeeded' THEN 'Video is ready.'
+        WHEN status = 'failed' THEN COALESCE(error, progress_message)
+        WHEN status = 'queued' THEN 'Queued for video generation.'
+        ELSE 'Generating video.'
+      END
+    WHERE progress_message IS NULL
   `);
 }
 

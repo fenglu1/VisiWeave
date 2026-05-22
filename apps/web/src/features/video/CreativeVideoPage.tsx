@@ -1,6 +1,7 @@
 import {
   ArrowRight,
   CheckCircle2,
+  Clock3,
   Film,
   ImageIcon,
   Loader2,
@@ -37,6 +38,28 @@ export interface CreativeVideoPageProps {
 }
 
 type VideoMode = "text_to_video" | "image_to_video";
+type VideoProgressFields = {
+  progress?: unknown;
+  progressPercent?: unknown;
+  progressStage?: unknown;
+  percent?: unknown;
+  percentage?: unknown;
+  phase?: unknown;
+  progressMessage?: unknown;
+  stage?: unknown;
+  stageLabel?: unknown;
+  stageMessage?: unknown;
+};
+
+interface VideoProgressSnapshot {
+  createdAt: string;
+  error?: string;
+  jobId?: string;
+  progressPercent: number;
+  stageText: string;
+  status: VideoGenerationStatus;
+  updatedAt?: string;
+}
 
 export function CreativeVideoPage({
   initialReferenceAssetId,
@@ -56,6 +79,8 @@ export function CreativeVideoPage({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
+  const [currentJob, setCurrentJob] = useState<VideoProgressSnapshot | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [providerStatus, setProviderStatus] = useState<VideoProviderStatus | null>(null);
   const [providerLoading, setProviderLoading] = useState(true);
   const [providerError, setProviderError] = useState("");
@@ -105,6 +130,20 @@ export function CreativeVideoPage({
       setPrompt(initialPrompt);
     }
   }, [initialPrompt]);
+
+  useEffect(() => {
+    if (!currentJob || isTerminalVideoStatus(currentJob.status)) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [currentJob?.jobId, currentJob?.status]);
 
   useEffect(() => {
     if (!initialReferenceAssetId) {
@@ -167,6 +206,7 @@ export function CreativeVideoPage({
   const providerBlockMessage = providerLoading
     ? t("videoProviderChecking")
     : providerError || providerUnavailableMessage(providerStatus, mode, t);
+  const showKeyframeProviderNote = isKeyframeProviderStatus(providerStatus);
   const canSubmit =
     prompt.trim().length > 0 &&
     !submitting &&
@@ -190,6 +230,12 @@ export function CreativeVideoPage({
     setSubmitting(true);
     setError("");
     setStatusMessage("");
+    setCurrentJob({
+      createdAt: new Date().toISOString(),
+      progressPercent: 4,
+      stageText: t("videoProgressStageSubmitting"),
+      status: "queued"
+    });
 
     const request: GenerateVideoRequest = {
       mode,
@@ -216,6 +262,8 @@ export function CreativeVideoPage({
         throw new Error(t("videoGenerateInvalidData"));
       }
 
+      setCurrentJob(videoJobProgressSnapshot(body.job, t));
+
       if (body.job.status === "failed") {
         throw new Error(body.job.error?.trim() || t("videoGenerateFailed"));
       }
@@ -224,7 +272,9 @@ export function CreativeVideoPage({
         setStatusMessage(t("videoGenerateSaved"));
       } else {
         setStatusMessage(t("videoGenerateSubmitted"));
-        const completedJob = await pollVideoJob(body.job.id, locale, t);
+        const completedJob = await pollVideoJob(body.job.id, locale, t, (job) => {
+          setCurrentJob(videoJobProgressSnapshot(job, t));
+        });
         if (completedJob.job.status === "failed") {
           throw new Error(completedJob.job.error?.trim() || t("videoGenerateFailed"));
         }
@@ -236,7 +286,20 @@ export function CreativeVideoPage({
 
       onClearInitialReference?.();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : t("videoGenerateFailed"));
+      const errorMessage = submitError instanceof Error ? submitError.message : t("videoGenerateFailed");
+      setError(errorMessage);
+      setCurrentJob((current) =>
+        current && !isTerminalVideoStatus(current.status)
+          ? {
+              ...current,
+              error: errorMessage,
+              progressPercent: 100,
+              stageText: t("videoProgressStageFailed"),
+              status: "failed",
+              updatedAt: new Date().toISOString()
+            }
+          : current
+      );
     } finally {
       setSubmitting(false);
     }
@@ -321,6 +384,7 @@ export function CreativeVideoPage({
                 </span>
               </div>
               {providerStatus?.message ? <p>{providerStatus.message}</p> : null}
+              {showKeyframeProviderNote ? <p>{t("videoProviderKeyframeNote")}</p> : null}
               {providerBlockMessage ? <p className="video-provider-panel__warning">{providerBlockMessage}</p> : null}
             </section>
 
@@ -447,6 +511,7 @@ export function CreativeVideoPage({
                 <p>{statusMessage}</p>
               </div>
             ) : null}
+            {currentJob ? <VideoProgressCard nowMs={nowMs} progress={currentJob} /> : null}
 
             <footer className="video-form__footer">
               <p>{providerBlockMessage || (mode === "image_to_video" ? t("videoSubmitImageHint") : t("videoSubmitTextHint"))}</p>
@@ -458,7 +523,7 @@ export function CreativeVideoPage({
           </form>
 
           <aside className="video-brief-panel" aria-label={t("videoBriefAria")}>
-            <span className="video-brief-panel__mark">10s</span>
+            <span className="video-brief-panel__mark">{t("videoDurationOption", { seconds: durationSeconds })}</span>
             <h2>{t("videoBriefTitle")}</h2>
             <p>{t("videoBriefCopy")}</p>
             <dl>
@@ -479,6 +544,68 @@ export function CreativeVideoPage({
         </section>
       </div>
     </main>
+  );
+}
+
+function VideoProgressCard({ nowMs, progress }: { nowMs: number; progress: VideoProgressSnapshot }) {
+  const { t } = useI18n();
+  const statusIcon =
+    progress.status === "succeeded" ? (
+      <CheckCircle2 className="size-4" aria-hidden="true" />
+    ) : progress.status === "failed" || progress.status === "cancelled" ? (
+      <XCircle className="size-4" aria-hidden="true" />
+    ) : (
+      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+    );
+  const elapsedMs = Math.max(0, nowMs - timestampMs(progress.createdAt));
+  const percent = clampProgressPercent(progress.progressPercent);
+
+  return (
+    <section
+      aria-label={t("videoProgressStatusAria", {
+        percent,
+        status: t("videoStatusValue", { status: progress.status })
+      })}
+      className="video-progress-card"
+      data-status={progress.status}
+      role="status"
+    >
+      <div className="video-progress-card__header">
+        <div>
+          <p className="video-progress-card__eyebrow">{t("videoProgressCurrentTask")}</p>
+          <h2>
+            {statusIcon}
+            {t("videoStatusValue", { status: progress.status })}
+          </h2>
+        </div>
+        <span className="video-progress-card__percent">{t("videoProgressPercent", { percent })}</span>
+      </div>
+      <div
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={percent}
+        className="video-progress-bar"
+        role="progressbar"
+      >
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <dl className="video-progress-card__meta">
+        <div>
+          <dt>{t("videoProgressStageLabel")}</dt>
+          <dd>{progress.error || progress.stageText}</dd>
+        </div>
+        <div>
+          <dt>{t("videoProgressElapsedLabel")}</dt>
+          <dd>{t("videoProgressElapsed", { time: formatElapsedDuration(elapsedMs, t) })}</dd>
+        </div>
+        {progress.jobId ? (
+          <div>
+            <dt>{t("videoProgressJobLabel")}</dt>
+            <dd>{progress.jobId}</dd>
+          </div>
+        ) : null}
+      </dl>
+    </section>
   );
 }
 
@@ -541,6 +668,19 @@ function isVideoGenerationJobResponse(value: unknown): value is VideoGenerationJ
   );
 }
 
+function videoJobProgressSnapshot(job: VideoGenerationJobResponse["job"], t: Translate): VideoProgressSnapshot {
+  const progressFields = job as VideoGenerationJobResponse["job"] & VideoProgressFields;
+  return {
+    createdAt: job.createdAt,
+    error: job.error,
+    jobId: job.id,
+    progressPercent: progressPercentForStatus(job.status, readProgressPercent(progressFields)),
+    stageText: readStageText(progressFields, job.status, t),
+    status: job.status,
+    updatedAt: job.updatedAt
+  };
+}
+
 function isVideoGenerationOutput(value: unknown): boolean {
   if (!isRecord(value)) {
     return false;
@@ -594,6 +734,63 @@ function isVideoStatus(value: unknown): value is VideoGenerationStatus {
   return value === "queued" || value === "running" || value === "succeeded" || value === "failed" || value === "cancelled";
 }
 
+function isTerminalVideoStatus(status: VideoGenerationStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function readProgressPercent(value: VideoProgressFields): number | undefined {
+  const candidates = [value.progressPercent, value.percent, value.percentage, value.progress];
+  for (const candidate of candidates) {
+    const numericValue = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    if (Number.isFinite(numericValue)) {
+      return numericValue <= 1 && numericValue > 0 ? numericValue * 100 : numericValue;
+    }
+  }
+
+  return undefined;
+}
+
+function readStageText(value: VideoProgressFields, status: VideoGenerationStatus, t: Translate): string {
+  const stage = [value.stageMessage, value.progressMessage, value.stageLabel, value.progressStage, value.phase, value.stage].find(
+    (candidate) => typeof candidate === "string" && candidate.trim().length > 0
+  );
+
+  return typeof stage === "string" ? stage.trim() : fallbackStageText(status, t);
+}
+
+function fallbackStageText(status: VideoGenerationStatus, t: Translate): string {
+  switch (status) {
+    case "queued":
+      return t("videoProgressStageQueued");
+    case "running":
+      return t("videoProgressStageRunning");
+    case "succeeded":
+      return t("videoProgressStageSucceeded");
+    case "failed":
+      return t("videoProgressStageFailed");
+    case "cancelled":
+      return t("videoProgressStageCancelled");
+  }
+}
+
+function progressPercentForStatus(status: VideoGenerationStatus, progressPercent: number | undefined): number {
+  if (status === "succeeded") {
+    return 100;
+  }
+  if (status === "failed" || status === "cancelled") {
+    return clampProgressPercent(progressPercent ?? 100);
+  }
+  if (typeof progressPercent === "number") {
+    return clampProgressPercent(progressPercent);
+  }
+
+  return status === "queued" ? 8 : 35;
+}
+
+function clampProgressPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -604,6 +801,14 @@ function isModeSupported(provider: VideoProviderStatus | null, mode: VideoMode):
   }
 
   return mode === "image_to_video" ? provider.supportsImageToVideo : provider.supportsTextToVideo;
+}
+
+function isKeyframeProviderStatus(provider: VideoProviderStatus | null): boolean {
+  if (!provider) {
+    return false;
+  }
+
+  return provider.id.toLowerCase() === "keyframe-image" || provider.message?.toLowerCase().includes("keyframe") === true;
 }
 
 function providerUnavailableMessage(provider: VideoProviderStatus | null, mode: VideoMode, t: Translate): string {
@@ -622,7 +827,12 @@ function capabilityState(supported: boolean | undefined, t: Translate): string {
   return supported ? t("videoProviderSupported") : t("videoProviderUnsupported");
 }
 
-async function pollVideoJob(jobId: string, locale: Locale, t: Translate): Promise<VideoGenerationJobResponse> {
+async function pollVideoJob(
+  jobId: string,
+  locale: Locale,
+  t: Translate,
+  onProgress: (job: VideoGenerationJobResponse["job"]) => void
+): Promise<VideoGenerationJobResponse> {
   const deadline = Date.now() + VIDEO_JOB_POLL_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
@@ -638,7 +848,9 @@ async function pollVideoJob(jobId: string, locale: Locale, t: Translate): Promis
       throw new Error(t("videoGenerateInvalidData"));
     }
 
-    if (body.job.status === "succeeded" || body.job.status === "failed" || body.job.status === "cancelled") {
+    onProgress(body.job);
+
+    if (isTerminalVideoStatus(body.job.status)) {
       return body;
     }
   }
@@ -650,6 +862,22 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function timestampMs(value: string): number {
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function formatElapsedDuration(elapsedMs: number, t: Translate): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) {
+    return t("videoProgressElapsedSeconds", { seconds });
+  }
+
+  return t("videoProgressElapsedMinutes", { minutes, seconds });
 }
 
 function promptExcerpt(value: string): string {

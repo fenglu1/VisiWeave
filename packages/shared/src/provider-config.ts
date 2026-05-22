@@ -1,4 +1,5 @@
 export type RuntimeImageProvider = "openai" | "codex" | "none";
+export type VideoProviderKind = "keyframe-image" | "custom-http";
 
 export const PROVIDER_SOURCE_IDS = ["env-openai", "local-openai", "codex"] as const;
 export type ProviderSourceId = (typeof PROVIDER_SOURCE_IDS)[number];
@@ -52,10 +53,31 @@ export interface LocalOpenAIProviderConfigView {
   timeoutMs: number;
 }
 
+export interface VideoProviderConfigView {
+  kind: VideoProviderKind;
+  apiKey: MaskedSecret;
+  baseUrl: string;
+  textToVideoUrl: string;
+  imageToVideoUrl: string;
+  statusUrl: string;
+  timeoutMs: number;
+  pollIntervalMs: number;
+  ffmpegPath: string;
+  width: number;
+  height: number;
+  fps: number;
+  interpolation: string;
+  configured: boolean;
+  supportsTextToVideo: boolean;
+  supportsImageToVideo: boolean;
+  source: "environment" | "local";
+}
+
 export interface ProviderConfigResponse {
   sourceOrder: ProviderSourceId[];
   sources: ProviderSourceView[];
   localOpenAI: LocalOpenAIProviderConfigView;
+  video: VideoProviderConfigView;
   activeSource?: ProviderSourceSummary;
 }
 
@@ -70,6 +92,24 @@ export interface SaveLocalOpenAIProviderConfig {
 export interface SaveProviderConfigRequest {
   sourceOrder: ProviderSourceId[];
   localOpenAI?: SaveLocalOpenAIProviderConfig;
+  video?: SaveVideoProviderConfig;
+}
+
+export interface SaveVideoProviderConfig {
+  kind?: VideoProviderKind;
+  apiKey?: string;
+  preserveApiKey?: boolean;
+  baseUrl?: string;
+  textToVideoUrl?: string;
+  imageToVideoUrl?: string;
+  statusUrl?: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  ffmpegPath?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+  interpolation?: string;
 }
 
 export interface AuthStatusResponse {

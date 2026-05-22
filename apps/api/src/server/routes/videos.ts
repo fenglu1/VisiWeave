@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import {
+  batchDeleteVideoOutputs,
   deleteVideoOutput,
   getVideoJob,
   getVideoLibrary,
@@ -9,7 +10,7 @@ import {
 import { getConfiguredVideoProvider, VideoProviderError } from "../../infrastructure/providers/video-provider.js";
 import { errorResponse } from "../http/errors.js";
 import { readJson } from "../http/json.js";
-import { parseVideoGeneratePayload } from "../http/validation.js";
+import { parseVideoBatchDeletePayload, parseVideoGeneratePayload } from "../http/validation.js";
 
 export function registerVideoRoutes(app: Hono): void {
   app.get("/api/videos/provider-status", (c) => c.json(getVideoProviderStatusResponse()));
@@ -64,10 +65,30 @@ export function registerVideoRoutes(app: Hono): void {
     return c.json(job);
   });
 
+  app.post("/api/videos/batch-delete", async (c) => {
+    const payload = await readJson(c.req.raw);
+    if (!payload.ok) {
+      return c.json(payload.error, 400);
+    }
+
+    const parsed = parseVideoBatchDeletePayload(payload.value);
+    if (!parsed.ok) {
+      return c.json(parsed.error, 400);
+    }
+
+    return c.json(await batchDeleteVideoOutputs(parsed.value.outputIds));
+  });
+
   app.delete("/api/videos/:outputId", async (c) => {
     const deleted = await deleteVideoOutput(c.req.param("outputId"));
-    if (!deleted) {
+    if (deleted === "not_found") {
       return c.json(errorResponse("not_found", "Video output was not found."), 404);
+    }
+    if (deleted === "skipped") {
+      return c.json(errorResponse("video_output_in_progress", "Queued or running video outputs cannot be deleted."), 409);
+    }
+    if (deleted === "failed") {
+      return c.json(errorResponse("video_output_delete_failed", "Video output could not be deleted."), 500);
     }
 
     return c.json({

@@ -3,11 +3,13 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import type {
   GenerateVideoRequest,
+  VideoBatchDeleteResponse,
   VideoAspectRatio,
   VideoAsset,
   VideoGenerationJob,
   VideoGenerationJobResponse,
   VideoGenerationOutput,
+  VideoGenerationProgressStage,
   VideoGenerationStatus,
   VideoLibraryResponse,
   VideoProviderStatusResponse
@@ -20,11 +22,13 @@ import {
   getVideoProviderStatus,
   sanitizeVideoErrorMessage,
   type VideoProvider,
+  type VideoProviderProgress,
   type VideoProviderReferenceAsset
 } from "../../infrastructure/providers/video-provider.js";
 import { readStoredAsset } from "../generation/image-generation.js";
 
 const localAssetStorage = new LocalAssetStorageAdapter();
+const PROTECTED_DELETE_STATUSES = new Set<VideoGenerationStatus>(["queued", "running"]);
 
 export function getVideoProviderStatusResponse(): VideoProviderStatusResponse {
   return {
@@ -55,8 +59,22 @@ export async function runVideoGeneration(
       status: "queued",
       error: null,
       referenceAssetId: input.referenceAssetId ?? null,
+      progressPercent: 0,
+      progressStage: "queued",
+      progressMessage: "Queued for video generation.",
       createdAt,
       updatedAt: createdAt
+    })
+    .run();
+
+  db.insert(videoGenerationOutputs)
+    .values({
+      id: outputId,
+      generationId,
+      status: "queued",
+      assetId: null,
+      error: null,
+      createdAt
     })
     .run();
 
@@ -80,10 +98,17 @@ export async function runVideoGeneration(
       size,
       provider: provider.id,
       status: "queued",
+      progressPercent: 0,
+      progressStage: "queued",
+      progressMessage: "Queued for video generation.",
       referenceAssetId: input.referenceAssetId,
       createdAt,
       updatedAt: createdAt,
-      outputs: []
+      outputs: [{
+        id: outputId,
+        status: "queued",
+        createdAt
+      }]
     }
   };
 }
@@ -126,10 +151,17 @@ async function processVideoGeneration({
   db.update(videoGenerationRecords)
     .set({
       status: "running",
+      progressPercent: 10,
+      progressStage: "running",
+      progressMessage: "Generating video.",
       updatedAt: startedAt
     })
     .where(eq(videoGenerationRecords.id, generationId))
     .run();
+  updateVideoOutput(outputId, {
+    status: "running",
+    error: null
+  });
 
   try {
     const referenceAsset = input.referenceAssetId ? await readReferenceAsset(input.referenceAssetId) : undefined;
@@ -137,15 +169,24 @@ async function processVideoGeneration({
       {
         ...input,
         size,
-        referenceAsset
+        referenceAsset,
+        onProgress: (progress) => {
+          updateVideoProgress(generationId, providerProgressToRecordProgress(progress));
+        }
       }
     );
+    updateVideoProgress(generationId, {
+      status: "running",
+      progressPercent: 95,
+      progressStage: "saving",
+      progressMessage: "Saving generated video."
+    });
     const savedAsset = await saveProviderVideoAsset({
       bytes: providerOutput.bytes,
       mimeType: providerOutput.mimeType,
       fileName: providerOutput.fileName,
       durationSeconds: input.durationSeconds,
-      size,
+      size: providerOutput.size ?? size,
       createdAt
     });
     const completedAt = new Date().toISOString();
@@ -153,44 +194,51 @@ async function processVideoGeneration({
     db.update(videoGenerationRecords)
       .set({
         status: "succeeded",
+        width: providerOutput.size?.width ?? size.width,
+        height: providerOutput.size?.height ?? size.height,
+        progressPercent: 100,
+        progressStage: "succeeded",
+        progressMessage: "Video is ready.",
         updatedAt: completedAt
       })
       .where(eq(videoGenerationRecords.id, generationId))
       .run();
 
-    db.insert(videoGenerationOutputs)
-      .values({
-        id: outputId,
-        generationId,
-        status: "succeeded",
-        assetId: savedAsset.id,
-        error: null,
-        createdAt: completedAt
-      })
-      .run();
+    updateVideoOutput(outputId, {
+      status: "succeeded",
+      assetId: savedAsset.id,
+      error: null
+    });
   } catch (error) {
     const failedAt = new Date().toISOString();
     const message = sanitizeVideoErrorMessage(errorToMessage(error));
+    const current = db
+      .select({
+        progressPercent: videoGenerationRecords.progressPercent,
+        progressStage: videoGenerationRecords.progressStage,
+        progressMessage: videoGenerationRecords.progressMessage
+      })
+      .from(videoGenerationRecords)
+      .where(eq(videoGenerationRecords.id, generationId))
+      .get();
 
     db.update(videoGenerationRecords)
       .set({
         status: "failed",
         error: message,
+        progressPercent: current?.progressPercent ?? 10,
+        progressStage: "failed",
+        progressMessage: message,
         updatedAt: failedAt
       })
       .where(eq(videoGenerationRecords.id, generationId))
       .run();
 
-    db.insert(videoGenerationOutputs)
-      .values({
-        id: outputId,
-        generationId,
-        status: "failed",
-        assetId: null,
-        error: message,
-        createdAt: failedAt
-      })
-      .run();
+    updateVideoOutput(outputId, {
+      status: "failed",
+      assetId: null,
+      error: message
+    });
   }
 }
 
@@ -253,6 +301,9 @@ export function getVideoLibrary(): VideoLibraryResponse {
       },
       provider: generation.provider,
       status: output.status as VideoGenerationStatus,
+      progressPercent: generation.progressPercent,
+      progressStage: generation.progressStage,
+      progressMessage: generation.progressMessage ?? undefined,
       error: output.error ? sanitizeVideoErrorMessage(output.error) : generation.error ? sanitizeVideoErrorMessage(generation.error) : undefined,
       referenceAssetId: generation.referenceAssetId ?? undefined,
       createdAt: output.createdAt,
@@ -261,19 +312,59 @@ export function getVideoLibrary(): VideoLibraryResponse {
   };
 }
 
-export async function deleteVideoOutput(outputId: string): Promise<boolean> {
+export async function deleteVideoOutput(outputId: string): Promise<"deleted" | "not_found" | "skipped" | "failed"> {
+  try {
+    return await deleteVideoOutputById(outputId);
+  } catch {
+    return "failed";
+  }
+}
+
+export async function batchDeleteVideoOutputs(outputIds: string[]): Promise<VideoBatchDeleteResponse> {
+  const result: VideoBatchDeleteResponse = {
+    deletedIds: [],
+    notFoundIds: [],
+    skippedIds: [],
+    failedIds: []
+  };
+
+  for (const outputId of outputIds) {
+    const status = await deleteVideoOutput(outputId);
+    if (status === "deleted") {
+      result.deletedIds.push(outputId);
+    } else if (status === "not_found") {
+      result.notFoundIds.push(outputId);
+    } else if (status === "skipped") {
+      result.skippedIds.push(outputId);
+    } else {
+      result.failedIds.push(outputId);
+    }
+  }
+
+  return result;
+}
+
+async function deleteVideoOutputById(outputId: string): Promise<"deleted" | "not_found" | "skipped"> {
   const existing = db
     .select({
       output: videoGenerationOutputs,
+      generation: videoGenerationRecords,
       asset: assets
     })
     .from(videoGenerationOutputs)
+    .innerJoin(videoGenerationRecords, eq(videoGenerationOutputs.generationId, videoGenerationRecords.id))
     .leftJoin(assets, eq(videoGenerationOutputs.assetId, assets.id))
     .where(eq(videoGenerationOutputs.id, outputId))
     .get();
 
   if (!existing) {
-    return false;
+    return "not_found";
+  }
+
+  const outputStatus = existing.output.status as VideoGenerationStatus;
+  const generationStatus = existing.generation.status as VideoGenerationStatus;
+  if (PROTECTED_DELETE_STATUSES.has(outputStatus) || PROTECTED_DELETE_STATUSES.has(generationStatus)) {
+    return "skipped";
   }
 
   db.delete(videoGenerationOutputs).where(eq(videoGenerationOutputs.id, outputId)).run();
@@ -283,7 +374,7 @@ export async function deleteVideoOutput(outputId: string): Promise<boolean> {
     db.delete(assets).where(eq(assets.id, existing.asset.id)).run();
   }
 
-  return true;
+  return "deleted";
 }
 
 export function isGeneratedImageAsset(assetId: string): boolean {
@@ -314,6 +405,9 @@ function toVideoGenerationJob(
     },
     provider: record.provider,
     status: record.status as VideoGenerationStatus,
+    progressPercent: record.progressPercent,
+    progressStage: record.progressStage,
+    progressMessage: record.progressMessage ?? undefined,
     error: record.error ? sanitizeVideoErrorMessage(record.error) : undefined,
     referenceAssetId: record.referenceAssetId ?? undefined,
     createdAt: record.createdAt,
@@ -332,6 +426,63 @@ function toVideoAsset(asset: typeof assets.$inferSelect, durationSeconds: number
     height: asset.height,
     durationSeconds
   };
+}
+
+function updateVideoProgress(
+  generationId: string,
+  progress: {
+    status?: VideoGenerationStatus;
+    progressPercent: number;
+    progressStage: VideoGenerationProgressStage | string;
+    progressMessage: string;
+  }
+): void {
+  db.update(videoGenerationRecords)
+    .set({
+      status: progress.status,
+      progressPercent: progress.progressPercent,
+      progressStage: progress.progressStage,
+      progressMessage: progress.progressMessage,
+      updatedAt: new Date().toISOString()
+    })
+    .where(eq(videoGenerationRecords.id, generationId))
+    .run();
+}
+
+function providerProgressToRecordProgress(progress: VideoProviderProgress): {
+  status: VideoGenerationStatus;
+  progressPercent: number;
+  progressStage: VideoGenerationProgressStage | string;
+  progressMessage: string;
+} {
+  return {
+    status: "running",
+    progressPercent: clampProgressPercent(progress.progressPercent, 0, 94),
+    progressStage: progress.progressStage,
+    progressMessage: sanitizeVideoErrorMessage(progress.progressMessage)
+  };
+}
+
+function clampProgressPercent(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function updateVideoOutput(
+  outputId: string,
+  values: {
+    status: VideoGenerationStatus;
+    assetId?: string | null;
+    error?: string | null;
+  }
+): void {
+  db.update(videoGenerationOutputs)
+    .set(values)
+    .where(eq(videoGenerationOutputs.id, outputId))
+    .run();
 }
 
 async function saveProviderVideoAsset(input: {

@@ -2,7 +2,7 @@
 
 Generated documentation for the SQLite schema defined in `apps/api/src/infrastructure/schema.ts`.
 
-Last reviewed: 2026-05-05.
+Last reviewed: 2026-05-22.
 
 ## `projects`
 
@@ -58,7 +58,7 @@ Stores optional Tencent Cloud COS backup configuration.
 
 ## `provider_configs`
 
-Stores image provider source order and local OpenAI-compatible settings.
+Stores image provider source order, local OpenAI-compatible settings, and local video provider settings.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -68,6 +68,19 @@ Stores image provider source order and local OpenAI-compatible settings.
 | `local_base_url` | text | Optional OpenAI-compatible base URL. |
 | `local_model` | text | Optional image model. |
 | `local_timeout_ms` | integer | Optional image timeout in milliseconds. |
+| `video_kind` | text | Optional video provider kind. |
+| `video_api_key` | text | Optional video provider API key. |
+| `video_base_url` | text | Optional video provider base URL. |
+| `video_text_to_video_url` | text | Optional text-to-video endpoint URL. |
+| `video_image_to_video_url` | text | Optional image-to-video endpoint URL. |
+| `video_status_url` | text | Optional video job polling URL template. |
+| `video_timeout_ms` | integer | Optional video provider timeout in milliseconds. |
+| `video_poll_interval_ms` | integer | Optional video job polling interval in milliseconds. |
+| `video_ffmpeg_path` | text | Optional FFmpeg executable path for local keyframe video. |
+| `video_width` | integer | Optional generated video width. |
+| `video_height` | integer | Optional generated video height. |
+| `video_fps` | integer | Optional generated video frame rate. |
+| `video_interpolation` | text | Optional local keyframe video interpolation mode. |
 | `created_at` | text | Required ISO timestamp. |
 | `updated_at` | text | Required ISO timestamp. |
 
@@ -150,13 +163,52 @@ Stores multiple reference assets used by one generation.
 | `position` | integer | Required reference ordering. |
 | `created_at` | text | Required ISO timestamp. |
 
+## `video_generation_records`
+
+Stores one creative video generation request and its overall status.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | text | Primary key. |
+| `mode` | text | Required video generation mode. |
+| `prompt` | text | Required user prompt. |
+| `duration_seconds` | integer | Required video duration in seconds. |
+| `aspect_ratio` | text | Required requested aspect ratio. |
+| `width` | integer | Required target video width. |
+| `height` | integer | Required target video height. |
+| `provider` | text | Required video provider ID. |
+| `status` | text | Required generation status. |
+| `error` | text | Optional generation error. |
+| `reference_asset_id` | text | Optional reference to `assets.id`. |
+| `progress_percent` | integer | Required persisted progress percentage. |
+| `progress_stage` | text | Required persisted progress stage. |
+| `progress_message` | text | Optional persisted progress message. |
+| `created_at` | text | Required ISO timestamp. |
+| `updated_at` | text | Required ISO timestamp. |
+
+## `video_generation_outputs`
+
+Stores individual video output status and asset linkage for a video generation.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | text | Primary key. |
+| `generation_id` | text | Required reference to `video_generation_records.id`; cascades on delete. |
+| `status` | text | Required output status. |
+| `asset_id` | text | Optional reference to `assets.id`. |
+| `error` | text | Optional output error. |
+| `created_at` | text | Required ISO timestamp. |
+
 ## Relations
 
 - `generation_records` has many `generation_outputs`.
 - `generation_records` has many `generation_reference_assets`.
+- `video_generation_records` has many `video_generation_outputs`.
 - `generation_records.reference_asset_id` optionally references `assets.id`.
 - `generation_outputs.generation_id` references `generation_records.id` with cascade delete.
 - `generation_outputs.asset_id` optionally references `assets.id`.
 - `generation_reference_assets.generation_id` references `generation_records.id` with cascade delete.
 - `generation_reference_assets.asset_id` references `assets.id`.
-
+- `video_generation_records.reference_asset_id` optionally references `assets.id`.
+- `video_generation_outputs.generation_id` references `video_generation_records.id` with cascade delete.
+- `video_generation_outputs.asset_id` optionally references `assets.id`.
