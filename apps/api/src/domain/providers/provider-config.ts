@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import {
   IMAGE_MODEL,
   PROVIDER_SOURCE_IDS,
+  VIDEO_PROVIDER_KINDS,
   type CodexAuthSessionView,
   type LocalOpenAIProviderConfigView,
   type MaskedSecret,
@@ -13,6 +14,7 @@ import {
   type SaveLocalOpenAIProviderConfig,
   type SaveProviderConfigRequest,
   type SaveVideoProviderConfig,
+  type VideoProviderConfigMap,
   type VideoProviderConfigView,
   type VideoProviderKind
 } from "../contracts.js";
@@ -23,11 +25,12 @@ import {
   parseOpenAIImageTimeoutMs,
   type OpenAIImageProviderConfig
 } from "../../infrastructure/providers/image-provider.js";
-import { codexOAuthTokens, providerConfigs } from "../../infrastructure/schema.js";
+import { codexOAuthTokens, providerConfigs, videoProviderConfigs } from "../../infrastructure/schema.js";
 
 const ACTIVE_PROVIDER_CONFIG_ID = "active";
 const CODEX_TOKEN_ROW_ID = "default";
 const DEFAULT_VIDEO_PROVIDER_KIND: VideoProviderKind = "keyframe-image";
+const DEFAULT_VIDEO_PROVIDER_MODEL = "grok-imagine-video";
 const DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_KEYFRAME_VIDEO_WIDTH = 3840;
@@ -38,7 +41,9 @@ const DEFAULT_KEYFRAME_VIDEO_INTERPOLATION = "ffmpeg";
 export const DEFAULT_PROVIDER_SOURCE_ORDER: ProviderSourceId[] = ["env-openai", "local-openai", "codex"];
 
 type ProviderConfigRow = typeof providerConfigs.$inferSelect;
+type VideoProviderConfigRow = typeof videoProviderConfigs.$inferSelect;
 type CodexTokenRow = typeof codexOAuthTokens.$inferSelect;
+type VideoProviderConfigRowsByKind = Partial<Record<VideoProviderKind, VideoProviderConfigRow>>;
 
 interface ResolvedLocalConfig {
   localApiKey: string | null;
@@ -51,6 +56,7 @@ export interface LocalVideoProviderConfig {
   kind: VideoProviderKind;
   apiKey?: string;
   baseUrl?: string;
+  videoModel: string;
   textToVideoUrl?: string;
   imageToVideoUrl?: string;
   statusUrl?: string;
@@ -63,24 +69,26 @@ export interface LocalVideoProviderConfig {
   interpolation: string;
 }
 
-interface ResolvedVideoConfig {
-  videoKind: string | null;
-  videoApiKey: string | null;
-  videoBaseUrl: string | null;
-  videoTextToVideoUrl: string | null;
-  videoImageToVideoUrl: string | null;
-  videoStatusUrl: string | null;
-  videoTimeoutMs: number | null;
-  videoPollIntervalMs: number | null;
-  videoFfmpegPath: string | null;
-  videoWidth: number | null;
-  videoHeight: number | null;
-  videoFps: number | null;
-  videoInterpolation: string | null;
+interface ResolvedVideoProviderConfig {
+  kind: VideoProviderKind;
+  apiKey: string | null;
+  baseUrl: string | null;
+  videoModel: string | null;
+  textToVideoUrl: string | null;
+  imageToVideoUrl: string | null;
+  statusUrl: string | null;
+  timeoutMs: number | null;
+  pollIntervalMs: number | null;
+  ffmpegPath: string | null;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  interpolation: string | null;
 }
 
 export function getProviderConfig(): ProviderConfigResponse {
   const row = getProviderConfigRow();
+  const videoRows = getVideoProviderConfigRowsByKind();
   const sourceOrder = readSavedSourceOrder(row?.sourceOrderJson);
   const sourcesById = new Map(providerSources(row).map((source) => [source.id, source]));
   const sources = sourceOrder.map((sourceId) => sourcesById.get(sourceId)).filter(isDefined);
@@ -90,7 +98,8 @@ export function getProviderConfig(): ProviderConfigResponse {
     sourceOrder,
     sources,
     localOpenAI: localOpenAIConfigView(row),
-    video: videoProviderConfigView(row),
+    video: videoProviderConfigView(row, videoRows),
+    videoConfigs: videoProviderConfigViews(videoRows),
     activeSource: activeSource ? providerSourceSummary(activeSource) : undefined
   };
 }
@@ -102,8 +111,11 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
 
   const now = new Date().toISOString();
   const existing = getProviderConfigRow();
+  const existingVideoRows = getVideoProviderConfigRowsByKind();
   const local = resolveLocalConfigForSave(input.localOpenAI, existing);
-  const video = resolveVideoConfigForSave(input.video, existing);
+  const activeVideoKind = input.video
+    ? (parseVideoProviderKind(input.video.kind) ?? parseVideoProviderKind(existing?.videoKind) ?? DEFAULT_VIDEO_PROVIDER_KIND)
+    : parseVideoProviderKind(existing?.videoKind);
   const row: ProviderConfigRow = {
     id: ACTIVE_PROVIDER_CONFIG_ID,
     sourceOrderJson: JSON.stringify(input.sourceOrder),
@@ -111,19 +123,20 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
     localBaseUrl: local.localBaseUrl,
     localModel: local.localModel,
     localTimeoutMs: local.localTimeoutMs,
-    videoKind: video.videoKind,
-    videoApiKey: video.videoApiKey,
-    videoBaseUrl: video.videoBaseUrl,
-    videoTextToVideoUrl: video.videoTextToVideoUrl,
-    videoImageToVideoUrl: video.videoImageToVideoUrl,
-    videoStatusUrl: video.videoStatusUrl,
-    videoTimeoutMs: video.videoTimeoutMs,
-    videoPollIntervalMs: video.videoPollIntervalMs,
-    videoFfmpegPath: video.videoFfmpegPath,
-    videoWidth: video.videoWidth,
-    videoHeight: video.videoHeight,
-    videoFps: video.videoFps,
-    videoInterpolation: video.videoInterpolation,
+    videoKind: activeVideoKind ?? null,
+    videoApiKey: existing?.videoApiKey ?? null,
+    videoBaseUrl: existing?.videoBaseUrl ?? null,
+    videoModel: existing?.videoModel ?? null,
+    videoTextToVideoUrl: existing?.videoTextToVideoUrl ?? null,
+    videoImageToVideoUrl: existing?.videoImageToVideoUrl ?? null,
+    videoStatusUrl: existing?.videoStatusUrl ?? null,
+    videoTimeoutMs: existing?.videoTimeoutMs ?? null,
+    videoPollIntervalMs: existing?.videoPollIntervalMs ?? null,
+    videoFfmpegPath: existing?.videoFfmpegPath ?? null,
+    videoWidth: existing?.videoWidth ?? null,
+    videoHeight: existing?.videoHeight ?? null,
+    videoFps: existing?.videoFps ?? null,
+    videoInterpolation: existing?.videoInterpolation ?? null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
@@ -141,6 +154,7 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
         videoKind: row.videoKind,
         videoApiKey: row.videoApiKey,
         videoBaseUrl: row.videoBaseUrl,
+        videoModel: row.videoModel,
         videoTextToVideoUrl: row.videoTextToVideoUrl,
         videoImageToVideoUrl: row.videoImageToVideoUrl,
         videoStatusUrl: row.videoStatusUrl,
@@ -155,6 +169,14 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
       }
     })
     .run();
+
+  if (input.video) {
+    const videoKindForSave = activeVideoKind ?? DEFAULT_VIDEO_PROVIDER_KIND;
+    saveVideoProviderConfigForKind(
+      resolveVideoProviderConfigForSave(input.video, videoKindForSave, existingVideoRows[videoKindForSave]),
+      now
+    );
+  }
 
   return getProviderConfig();
 }
@@ -193,25 +215,21 @@ export function getLocalOpenAIImageProviderConfig(): OpenAIImageProviderConfig |
   };
 }
 
-export function getLocalVideoProviderConfig(): LocalVideoProviderConfig | undefined {
+export function getLocalVideoProviderConfig(kindOverride?: VideoProviderKind): LocalVideoProviderConfig | undefined {
   const row = getProviderConfigRow();
-  if (!row || !hasLocalVideoConfig(row)) {
+  const videoRows = getVideoProviderConfigRowsByKind();
+  if (!row || !hasLocalVideoConfig(row, videoRows)) {
     return undefined;
   }
 
-  const view = videoProviderConfigView(row, "local");
-  if (view.kind === "custom-http" && !view.baseUrl && !view.textToVideoUrl && !view.imageToVideoUrl) {
-    return undefined;
-  }
-
-  if (view.kind === "keyframe-image" && !process.env.OPENAI_API_KEY?.trim() && !row.videoApiKey?.trim()) {
-    return undefined;
-  }
-
+  const requestedKind = kindOverride ?? parseVideoProviderKind(row.videoKind) ?? DEFAULT_VIDEO_PROVIDER_KIND;
+  const view = videoProviderConfigViewForKind(requestedKind, videoRows[requestedKind], "local");
+  const videoRow = videoRows[view.kind];
   return {
     kind: view.kind,
-    apiKey: trimToUndefined(row.videoApiKey),
+    apiKey: trimToUndefined(videoRow?.apiKey),
     baseUrl: trimToUndefined(view.baseUrl),
+    videoModel: view.videoModel,
     textToVideoUrl: trimToUndefined(view.textToVideoUrl),
     imageToVideoUrl: trimToUndefined(view.imageToVideoUrl),
     statusUrl: trimToUndefined(view.statusUrl),
@@ -235,6 +253,20 @@ export function isProviderSourceId(value: unknown): value is ProviderSourceId {
 
 function getProviderConfigRow(): ProviderConfigRow | undefined {
   return db.select().from(providerConfigs).where(eq(providerConfigs.id, ACTIVE_PROVIDER_CONFIG_ID)).get();
+}
+
+function getVideoProviderConfigRowsByKind(): VideoProviderConfigRowsByKind {
+  const rows = db.select().from(videoProviderConfigs).all();
+  const byKind: VideoProviderConfigRowsByKind = {};
+
+  for (const row of rows) {
+    const kind = parseVideoProviderKind(row.kind);
+    if (kind) {
+      byKind[kind] = row;
+    }
+  }
+
+  return byKind;
 }
 
 function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView[] {
@@ -296,73 +328,99 @@ function localOpenAIConfigView(row: ProviderConfigRow | undefined): LocalOpenAIP
 
 function videoProviderConfigView(
   row: ProviderConfigRow | undefined,
-  source: "environment" | "local" = videoConfigSource(row)
+  videoRows: VideoProviderConfigRowsByKind,
+  source: "environment" | "local" = videoConfigSource(row, videoRows)
 ): VideoProviderConfigView {
   const envKind = parseVideoProviderKind(process.env.VIDEO_PROVIDER_KIND) ?? DEFAULT_VIDEO_PROVIDER_KIND;
   const kind = source === "environment" ? envKind : (parseVideoProviderKind(row?.videoKind) ?? DEFAULT_VIDEO_PROVIDER_KIND);
+  return videoProviderConfigViewForKind(kind, videoRows[kind], source);
+}
+
+function videoProviderConfigViews(videoRows: VideoProviderConfigRowsByKind): VideoProviderConfigMap {
+  return {
+    "keyframe-image": videoProviderConfigViewForKind("keyframe-image", videoRows["keyframe-image"], "local"),
+    "custom-http": videoProviderConfigViewForKind("custom-http", videoRows["custom-http"], "local"),
+    "grok-imagine": videoProviderConfigViewForKind("grok-imagine", videoRows["grok-imagine"], "local")
+  };
+}
+
+function videoProviderConfigViewForKind(
+  kind: VideoProviderKind,
+  row: VideoProviderConfigRow | undefined,
+  source: "environment" | "local"
+): VideoProviderConfigView {
   const baseUrl =
     source === "environment"
       ? kind === "keyframe-image"
         ? process.env.OPENAI_BASE_URL?.trim() || ""
         : process.env.VIDEO_PROVIDER_URL?.trim() || ""
-      : row?.videoBaseUrl?.trim() || "";
+      : row?.baseUrl?.trim() || "";
   const textToVideoUrl =
     source === "environment"
       ? process.env.VIDEO_PROVIDER_TEXT_TO_VIDEO_URL?.trim() || ""
-      : row?.videoTextToVideoUrl?.trim() || "";
+      : row?.textToVideoUrl?.trim() || "";
   const imageToVideoUrl =
     source === "environment"
       ? process.env.VIDEO_PROVIDER_IMAGE_TO_VIDEO_URL?.trim() || ""
-      : row?.videoImageToVideoUrl?.trim() || "";
+      : row?.imageToVideoUrl?.trim() || "";
   const statusUrl =
     source === "environment"
       ? process.env.VIDEO_PROVIDER_STATUS_URL?.trim() || ""
-      : row?.videoStatusUrl?.trim() || "";
+      : row?.statusUrl?.trim() || "";
   const apiKey =
     source === "environment"
       ? kind === "keyframe-image"
         ? maskedSecret(process.env.OPENAI_API_KEY)
         : maskedSecret(process.env.VIDEO_PROVIDER_API_KEY)
-      : maskedSecret(row?.videoApiKey);
+      : maskedSecret(row?.apiKey);
+  const videoModel =
+    source === "environment"
+      ? process.env.VIDEO_PROVIDER_MODEL?.trim() || DEFAULT_VIDEO_PROVIDER_MODEL
+      : row?.videoModel?.trim() || DEFAULT_VIDEO_PROVIDER_MODEL;
   const timeoutMs =
     source === "environment"
       ? positiveIntegerFromString(process.env.VIDEO_PROVIDER_TIMEOUT_MS, DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS)
-      : (validTimeoutMs(row?.videoTimeoutMs) ?? DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS);
+      : (validTimeoutMs(row?.timeoutMs) ?? DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS);
   const pollIntervalMs =
     source === "environment"
       ? positiveIntegerFromString(process.env.VIDEO_PROVIDER_POLL_INTERVAL_MS, DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS)
-      : (validTimeoutMs(row?.videoPollIntervalMs) ?? DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS);
+      : (validTimeoutMs(row?.pollIntervalMs) ?? DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS);
   const ffmpegPath =
     source === "environment"
       ? process.env.FFMPEG_PATH?.trim() || ""
-      : row?.videoFfmpegPath?.trim() || "";
+      : row?.ffmpegPath?.trim() || "";
   const width =
     source === "environment"
       ? positiveIntegerFromString(process.env.KEYFRAME_VIDEO_WIDTH, DEFAULT_KEYFRAME_VIDEO_WIDTH)
-      : (validTimeoutMs(row?.videoWidth) ?? DEFAULT_KEYFRAME_VIDEO_WIDTH);
+      : (validTimeoutMs(row?.width) ?? DEFAULT_KEYFRAME_VIDEO_WIDTH);
   const height =
     source === "environment"
       ? positiveIntegerFromString(process.env.KEYFRAME_VIDEO_HEIGHT, DEFAULT_KEYFRAME_VIDEO_HEIGHT)
-      : (validTimeoutMs(row?.videoHeight) ?? DEFAULT_KEYFRAME_VIDEO_HEIGHT);
+      : (validTimeoutMs(row?.height) ?? DEFAULT_KEYFRAME_VIDEO_HEIGHT);
   const fps =
     source === "environment"
       ? positiveIntegerFromString(process.env.KEYFRAME_VIDEO_FPS, DEFAULT_KEYFRAME_VIDEO_FPS)
-      : (validTimeoutMs(row?.videoFps) ?? DEFAULT_KEYFRAME_VIDEO_FPS);
+      : (validTimeoutMs(row?.fps) ?? DEFAULT_KEYFRAME_VIDEO_FPS);
   const interpolation =
     source === "environment"
       ? process.env.KEYFRAME_VIDEO_INTERPOLATION?.trim() || DEFAULT_KEYFRAME_VIDEO_INTERPOLATION
-      : row?.videoInterpolation?.trim() || DEFAULT_KEYFRAME_VIDEO_INTERPOLATION;
+      : row?.interpolation?.trim() || DEFAULT_KEYFRAME_VIDEO_INTERPOLATION;
   const configured =
     kind === "keyframe-image"
       ? source === "environment"
         ? Boolean(process.env.OPENAI_API_KEY?.trim())
-        : Boolean(row?.videoApiKey?.trim() || process.env.OPENAI_API_KEY?.trim())
-      : Boolean(baseUrl || textToVideoUrl || imageToVideoUrl);
+        : Boolean(row?.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim())
+      : kind === "grok-imagine"
+        ? source === "environment"
+        ? Boolean(process.env.VIDEO_PROVIDER_API_KEY?.trim() && baseUrl)
+          : Boolean(row?.apiKey?.trim() && baseUrl)
+        : Boolean(baseUrl || textToVideoUrl || imageToVideoUrl);
 
   return {
     kind,
     apiKey,
     baseUrl,
+    videoModel,
     textToVideoUrl,
     imageToVideoUrl,
     statusUrl,
@@ -374,7 +432,7 @@ function videoProviderConfigView(
     fps,
     interpolation,
     configured,
-    supportsTextToVideo: configured && (kind === "keyframe-image" || Boolean(baseUrl || textToVideoUrl)),
+    supportsTextToVideo: configured && (kind === "keyframe-image" || kind === "grok-imagine" || Boolean(baseUrl || textToVideoUrl)),
     supportsImageToVideo: configured && kind === "custom-http" && Boolean(baseUrl || imageToVideoUrl),
     source
   };
@@ -435,72 +493,97 @@ function resolveLocalApiKey(input: SaveLocalOpenAIProviderConfig, existing: Prov
   return existing?.localApiKey ?? null;
 }
 
-function resolveVideoConfigForSave(
-  input: SaveVideoProviderConfig | undefined,
-  existing: ProviderConfigRow | undefined
-): ResolvedVideoConfig {
-  if (!input) {
-    return {
-      videoKind: existing?.videoKind ?? null,
-      videoApiKey: existing?.videoApiKey ?? null,
-      videoBaseUrl: existing?.videoBaseUrl ?? null,
-      videoTextToVideoUrl: existing?.videoTextToVideoUrl ?? null,
-      videoImageToVideoUrl: existing?.videoImageToVideoUrl ?? null,
-      videoStatusUrl: existing?.videoStatusUrl ?? null,
-      videoTimeoutMs: existing?.videoTimeoutMs ?? null,
-      videoPollIntervalMs: existing?.videoPollIntervalMs ?? null,
-      videoFfmpegPath: existing?.videoFfmpegPath ?? null,
-      videoWidth: existing?.videoWidth ?? null,
-      videoHeight: existing?.videoHeight ?? null,
-      videoFps: existing?.videoFps ?? null,
-      videoInterpolation: existing?.videoInterpolation ?? null
-    };
-  }
-
+function resolveVideoProviderConfigForSave(
+  input: SaveVideoProviderConfig,
+  kind: VideoProviderKind,
+  existing: VideoProviderConfigRow | undefined
+): ResolvedVideoProviderConfig {
   return {
-    videoKind: parseVideoProviderKind(input.kind) ?? parseVideoProviderKind(existing?.videoKind) ?? DEFAULT_VIDEO_PROVIDER_KIND,
-    videoApiKey: resolveVideoApiKey(input, existing),
-    videoBaseUrl: Object.hasOwn(input, "baseUrl") ? trimToNull(input.baseUrl) : (existing?.videoBaseUrl ?? null),
-    videoTextToVideoUrl: Object.hasOwn(input, "textToVideoUrl")
-      ? trimToNull(input.textToVideoUrl)
-      : (existing?.videoTextToVideoUrl ?? null),
-    videoImageToVideoUrl: Object.hasOwn(input, "imageToVideoUrl")
-      ? trimToNull(input.imageToVideoUrl)
-      : (existing?.videoImageToVideoUrl ?? null),
-    videoStatusUrl: Object.hasOwn(input, "statusUrl") ? trimToNull(input.statusUrl) : (existing?.videoStatusUrl ?? null),
-    videoTimeoutMs: Object.hasOwn(input, "timeoutMs")
+    kind,
+    apiKey: resolveVideoApiKey(input, existing),
+    baseUrl: Object.hasOwn(input, "baseUrl") ? trimToNull(input.baseUrl) : (existing?.baseUrl ?? null),
+    videoModel:
+      Object.hasOwn(input, "videoModel") || Object.hasOwn(input, "model")
+        ? trimToNull(input.videoModel ?? input.model)
+        : (existing?.videoModel ?? null),
+    textToVideoUrl: Object.hasOwn(input, "textToVideoUrl") ? trimToNull(input.textToVideoUrl) : (existing?.textToVideoUrl ?? null),
+    imageToVideoUrl: Object.hasOwn(input, "imageToVideoUrl") ? trimToNull(input.imageToVideoUrl) : (existing?.imageToVideoUrl ?? null),
+    statusUrl: Object.hasOwn(input, "statusUrl") ? trimToNull(input.statusUrl) : (existing?.statusUrl ?? null),
+    timeoutMs: Object.hasOwn(input, "timeoutMs")
       ? requiredPositiveInteger(input.timeoutMs, "Video provider timeout")
-      : (existing?.videoTimeoutMs ?? null),
-    videoPollIntervalMs: Object.hasOwn(input, "pollIntervalMs")
+      : (existing?.timeoutMs ?? null),
+    pollIntervalMs: Object.hasOwn(input, "pollIntervalMs")
       ? requiredPositiveInteger(input.pollIntervalMs, "Video provider poll interval")
-      : (existing?.videoPollIntervalMs ?? null),
-    videoFfmpegPath: Object.hasOwn(input, "ffmpegPath") ? trimToNull(input.ffmpegPath) : (existing?.videoFfmpegPath ?? null),
-    videoWidth: Object.hasOwn(input, "width")
+      : (existing?.pollIntervalMs ?? null),
+    ffmpegPath: Object.hasOwn(input, "ffmpegPath") ? trimToNull(input.ffmpegPath) : (existing?.ffmpegPath ?? null),
+    width: Object.hasOwn(input, "width")
       ? requiredPositiveInteger(input.width, "Keyframe video width")
-      : (existing?.videoWidth ?? null),
-    videoHeight: Object.hasOwn(input, "height")
+      : (existing?.width ?? null),
+    height: Object.hasOwn(input, "height")
       ? requiredPositiveInteger(input.height, "Keyframe video height")
-      : (existing?.videoHeight ?? null),
-    videoFps: Object.hasOwn(input, "fps")
+      : (existing?.height ?? null),
+    fps: Object.hasOwn(input, "fps")
       ? requiredPositiveInteger(input.fps, "Keyframe video FPS")
-      : (existing?.videoFps ?? null),
-    videoInterpolation: Object.hasOwn(input, "interpolation")
-      ? trimToNull(input.interpolation)
-      : (existing?.videoInterpolation ?? null)
+      : (existing?.fps ?? null),
+    interpolation: Object.hasOwn(input, "interpolation") ? trimToNull(input.interpolation) : (existing?.interpolation ?? null)
   };
 }
 
-function resolveVideoApiKey(input: SaveVideoProviderConfig, existing: ProviderConfigRow | undefined): string | null {
+function saveVideoProviderConfigForKind(config: ResolvedVideoProviderConfig, now: string): void {
+  const row: VideoProviderConfigRow = {
+    kind: config.kind,
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    videoModel: config.videoModel,
+    textToVideoUrl: config.textToVideoUrl,
+    imageToVideoUrl: config.imageToVideoUrl,
+    statusUrl: config.statusUrl,
+    timeoutMs: config.timeoutMs,
+    pollIntervalMs: config.pollIntervalMs,
+    ffmpegPath: config.ffmpegPath,
+    width: config.width,
+    height: config.height,
+    fps: config.fps,
+    interpolation: config.interpolation,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  db.insert(videoProviderConfigs)
+    .values(row)
+    .onConflictDoUpdate({
+      target: videoProviderConfigs.kind,
+      set: {
+        apiKey: row.apiKey,
+        baseUrl: row.baseUrl,
+        videoModel: row.videoModel,
+        textToVideoUrl: row.textToVideoUrl,
+        imageToVideoUrl: row.imageToVideoUrl,
+        statusUrl: row.statusUrl,
+        timeoutMs: row.timeoutMs,
+        pollIntervalMs: row.pollIntervalMs,
+        ffmpegPath: row.ffmpegPath,
+        width: row.width,
+        height: row.height,
+        fps: row.fps,
+        interpolation: row.interpolation,
+        updatedAt: row.updatedAt
+      }
+    })
+    .run();
+}
+
+function resolveVideoApiKey(input: SaveVideoProviderConfig, existing: VideoProviderConfigRow | undefined): string | null {
   if (typeof input.apiKey === "string") {
     const trimmed = input.apiKey.trim();
     if (trimmed) {
       return trimmed;
     }
 
-    return input.preserveApiKey === true ? (existing?.videoApiKey ?? null) : null;
+    return input.preserveApiKey === true ? (existing?.apiKey ?? null) : null;
   }
 
-  return existing?.videoApiKey ?? null;
+  return existing?.apiKey ?? null;
 }
 
 function requiredPositiveInteger(value: number | undefined, label: string): number | null {
@@ -603,27 +686,42 @@ function positiveIntegerFromString(value: string | undefined, fallback: number):
 
 function parseVideoProviderKind(value: string | null | undefined): VideoProviderKind | undefined {
   const normalized = value?.trim();
-  return normalized === "keyframe-image" || normalized === "custom-http" ? normalized : undefined;
+  return normalized === "keyframe-image" || normalized === "custom-http" || normalized === "grok-imagine"
+    ? normalized
+    : undefined;
 }
 
-function videoConfigSource(row: ProviderConfigRow | undefined): "environment" | "local" {
-  return hasEnvironmentVideoConfig() || !row ? "environment" : "local";
+function videoConfigSource(
+  row: ProviderConfigRow | undefined,
+  videoRows: VideoProviderConfigRowsByKind
+): "environment" | "local" {
+  if (row && hasLocalVideoConfig(row, videoRows)) {
+    return "local";
+  }
+
+  return "environment";
 }
 
 function hasEnvironmentVideoConfig(): boolean {
   return Boolean(
     process.env.VIDEO_PROVIDER_KIND?.trim() ||
       process.env.VIDEO_PROVIDER_URL?.trim() ||
+      process.env.VIDEO_PROVIDER_MODEL?.trim() ||
       process.env.VIDEO_PROVIDER_TEXT_TO_VIDEO_URL?.trim() ||
       process.env.VIDEO_PROVIDER_IMAGE_TO_VIDEO_URL?.trim()
   );
 }
 
-function hasLocalVideoConfig(row: ProviderConfigRow): boolean {
+function hasLocalVideoConfig(row: ProviderConfigRow, videoRows: VideoProviderConfigRowsByKind): boolean {
+  const activeKind = parseVideoProviderKind(row.videoKind);
+  if (activeKind && hasLocalVideoProviderRowConfig(videoRows[activeKind])) {
+    return true;
+  }
+
   return Boolean(
-    row.videoKind?.trim() ||
-      row.videoApiKey?.trim() ||
+    row.videoApiKey?.trim() ||
       row.videoBaseUrl?.trim() ||
+      row.videoModel?.trim() ||
       row.videoTextToVideoUrl?.trim() ||
       row.videoImageToVideoUrl?.trim() ||
       row.videoStatusUrl?.trim() ||
@@ -634,6 +732,24 @@ function hasLocalVideoConfig(row: ProviderConfigRow): boolean {
       row.videoHeight ||
       row.videoFps ||
       row.videoInterpolation?.trim()
+  );
+}
+
+function hasLocalVideoProviderRowConfig(row: VideoProviderConfigRow | undefined): boolean {
+  return Boolean(
+    row?.apiKey?.trim() ||
+      row?.baseUrl?.trim() ||
+      row?.videoModel?.trim() ||
+      row?.textToVideoUrl?.trim() ||
+      row?.imageToVideoUrl?.trim() ||
+      row?.statusUrl?.trim() ||
+      row?.ffmpegPath?.trim() ||
+      row?.timeoutMs ||
+      row?.pollIntervalMs ||
+      row?.width ||
+      row?.height ||
+      row?.fps ||
+      row?.interpolation?.trim()
   );
 }
 

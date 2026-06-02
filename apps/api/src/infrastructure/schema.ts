@@ -51,6 +51,7 @@ export const providerConfigs = sqliteTable("provider_configs", {
   videoKind: text("video_kind"),
   videoApiKey: text("video_api_key"),
   videoBaseUrl: text("video_base_url"),
+  videoModel: text("video_model"),
   videoTextToVideoUrl: text("video_text_to_video_url"),
   videoImageToVideoUrl: text("video_image_to_video_url"),
   videoStatusUrl: text("video_status_url"),
@@ -61,6 +62,25 @@ export const providerConfigs = sqliteTable("provider_configs", {
   videoHeight: integer("video_height"),
   videoFps: integer("video_fps"),
   videoInterpolation: text("video_interpolation"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const videoProviderConfigs = sqliteTable("video_provider_configs", {
+  kind: text("kind").primaryKey(),
+  apiKey: text("api_key"),
+  baseUrl: text("base_url"),
+  videoModel: text("video_model"),
+  textToVideoUrl: text("text_to_video_url"),
+  imageToVideoUrl: text("image_to_video_url"),
+  statusUrl: text("status_url"),
+  timeoutMs: integer("timeout_ms"),
+  pollIntervalMs: integer("poll_interval_ms"),
+  ffmpegPath: text("ffmpeg_path"),
+  width: integer("width"),
+  height: integer("height"),
+  fps: integer("fps"),
+  interpolation: text("interpolation"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 });
@@ -157,6 +177,7 @@ export const videoGenerationOutputs = sqliteTable("video_generation_outputs", {
     .references(() => videoGenerationRecords.id, { onDelete: "cascade" }),
   status: text("status").notNull(),
   assetId: text("asset_id").references(() => assets.id),
+  providerJobId: text("provider_job_id"),
   error: text("error"),
   createdAt: text("created_at").notNull()
 });

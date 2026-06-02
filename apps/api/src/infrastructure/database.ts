@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   video_kind TEXT,
   video_api_key TEXT,
   video_base_url TEXT,
+  video_model TEXT,
   video_text_to_video_url TEXT,
   video_image_to_video_url TEXT,
   video_status_url TEXT,
@@ -99,6 +100,25 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   video_height INTEGER,
   video_fps INTEGER,
   video_interpolation TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS video_provider_configs (
+  kind TEXT PRIMARY KEY NOT NULL,
+  api_key TEXT,
+  base_url TEXT,
+  video_model TEXT,
+  text_to_video_url TEXT,
+  image_to_video_url TEXT,
+  status_url TEXT,
+  timeout_ms INTEGER,
+  poll_interval_ms INTEGER,
+  ffmpeg_path TEXT,
+  width INTEGER,
+  height INTEGER,
+  fps INTEGER,
+  interpolation TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -188,6 +208,7 @@ CREATE TABLE IF NOT EXISTS video_generation_outputs (
   generation_id TEXT NOT NULL REFERENCES video_generation_records(id) ON DELETE CASCADE,
   status TEXT NOT NULL,
   asset_id TEXT REFERENCES assets(id),
+  provider_job_id TEXT,
   error TEXT,
   created_at TEXT NOT NULL
 );
@@ -228,6 +249,7 @@ ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER")
 ensureColumn("provider_configs", "video_kind", "video_kind TEXT");
 ensureColumn("provider_configs", "video_api_key", "video_api_key TEXT");
 ensureColumn("provider_configs", "video_base_url", "video_base_url TEXT");
+ensureColumn("provider_configs", "video_model", "video_model TEXT");
 ensureColumn("provider_configs", "video_text_to_video_url", "video_text_to_video_url TEXT");
 ensureColumn("provider_configs", "video_image_to_video_url", "video_image_to_video_url TEXT");
 ensureColumn("provider_configs", "video_status_url", "video_status_url TEXT");
@@ -246,10 +268,12 @@ ensureColumn("agent_llm_configs", "supports_vision", "supports_vision INTEGER NO
 ensureColumn("video_generation_records", "progress_percent", "progress_percent INTEGER NOT NULL DEFAULT 0");
 ensureColumn("video_generation_records", "progress_stage", "progress_stage TEXT NOT NULL DEFAULT 'queued'");
 ensureColumn("video_generation_records", "progress_message", "progress_message TEXT");
+ensureColumn("video_generation_outputs", "provider_job_id", "provider_job_id TEXT");
 
 backfillGenerationReferenceAssets();
 backfillVideoGenerationProgress();
 ensureProviderConfigRow();
+backfillVideoProviderConfigs();
 ensureAgentLlmConfigRow();
 
 export const db = drizzle(sqlite, { schema });
@@ -320,6 +344,67 @@ function ensureProviderConfigRow(): void {
        VALUES (?, ?, ?, ?)`
     )
     .run("active", JSON.stringify(["env-openai", "local-openai", "codex"]), now, now);
+}
+
+function backfillVideoProviderConfigs(): void {
+  sqlite.exec(`
+    INSERT OR IGNORE INTO video_provider_configs (
+      kind,
+      api_key,
+      base_url,
+      video_model,
+      text_to_video_url,
+      image_to_video_url,
+      status_url,
+      timeout_ms,
+      poll_interval_ms,
+      ffmpeg_path,
+      width,
+      height,
+      fps,
+      interpolation,
+      created_at,
+      updated_at
+    )
+    SELECT
+      CASE
+        WHEN video_kind IN ('keyframe-image', 'custom-http', 'grok-imagine') THEN video_kind
+        ELSE 'keyframe-image'
+      END,
+      video_api_key,
+      video_base_url,
+      video_model,
+      video_text_to_video_url,
+      video_image_to_video_url,
+      video_status_url,
+      video_timeout_ms,
+      video_poll_interval_ms,
+      video_ffmpeg_path,
+      video_width,
+      video_height,
+      video_fps,
+      video_interpolation,
+      created_at,
+      updated_at
+    FROM provider_configs
+    WHERE id = 'active'
+      AND (
+        video_kind IS NOT NULL
+        OR video_api_key IS NOT NULL
+        OR video_base_url IS NOT NULL
+        OR video_model IS NOT NULL
+        OR video_text_to_video_url IS NOT NULL
+        OR video_image_to_video_url IS NOT NULL
+        OR video_status_url IS NOT NULL
+        OR video_timeout_ms IS NOT NULL
+        OR video_poll_interval_ms IS NOT NULL
+        OR video_ffmpeg_path IS NOT NULL
+        OR video_width IS NOT NULL
+        OR video_height IS NOT NULL
+        OR video_fps IS NOT NULL
+        OR video_interpolation IS NOT NULL
+      )
+  `);
 }
 
 function ensureAgentLlmConfigRow(): void {

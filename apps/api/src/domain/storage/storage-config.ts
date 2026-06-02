@@ -5,8 +5,8 @@ import { CosAssetStorageAdapter, normalizeKeyPrefix, type CosStorageAdapterConfi
 import { storageConfigs } from "../../infrastructure/schema.js";
 
 const ACTIVE_STORAGE_CONFIG_ID = "active";
-const DEFAULT_COS_BUCKET = process.env.COS_DEFAULT_BUCKET?.trim() || "source-1253253332";
-const DEFAULT_COS_REGION = process.env.COS_DEFAULT_REGION?.trim() || "ap-nanjing";
+const DEFAULT_COS_BUCKET = process.env.COS_DEFAULT_BUCKET?.trim() || "";
+const DEFAULT_COS_REGION = process.env.COS_DEFAULT_REGION?.trim() || "";
 const DEFAULT_COS_KEY_PREFIX = process.env.COS_DEFAULT_KEY_PREFIX?.trim() || "gpt-image-canvas/assets";
 
 type StorageConfigRow = typeof storageConfigs.$inferSelect;

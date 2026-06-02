@@ -2,8 +2,14 @@ import type {
   GenerateVideoRequest,
   VideoGenerationMode,
   VideoGenerationProgressStage,
+  VideoProviderKind,
   VideoProviderStatus
 } from "../../domain/contracts.js";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import { execFileSync } from "node:child_process";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { connect as tlsConnect } from "node:tls";
 import {
   createKeyframeVideoProvider,
   createLocalKeyframeVideoProvider,
@@ -16,6 +22,12 @@ import { DEFAULT_OPENAI_IMAGE_TIMEOUT_MS, getConfiguredImageModel } from "./imag
 const DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS = 2_000;
 const MAX_PROVIDER_VIDEO_BYTES = 1024 * 1024 * 1024;
+const MAX_PROVIDER_VIDEO_DOWNLOAD_ATTEMPTS = 3;
+const MAX_PROVIDER_VIDEO_DOWNLOAD_REDIRECTS = 5;
+const PROVIDER_VIDEO_DOWNLOAD_RETRY_DELAY_MS = 1_000;
+const GROK_IMAGINE_PROVIDER_KIND = "grok-imagine";
+const GROK_IMAGINE_DEFAULT_VIDEO_MODEL = "grok-imagine-video";
+let cachedWindowsSystemProxyUrl: string | undefined;
 
 export type VideoProviderErrorCode =
   | "video_provider_not_configured"
@@ -44,6 +56,7 @@ export interface VideoProviderProgress {
   progressPercent: number;
   progressStage: VideoGenerationProgressStage | string;
   progressMessage: string;
+  providerJobId?: string;
 }
 
 export interface VideoProviderInput extends GenerateVideoRequest {
@@ -78,37 +91,41 @@ interface CustomHttpVideoProviderConfig {
   imageToVideoUrl?: string;
   statusUrl?: string;
   apiKey?: string;
+  downloadProxyUrl?: string;
   timeoutMs: number;
   pollIntervalMs: number;
 }
 
-export function getVideoProviderStatus(): VideoProviderStatus {
-  if (isKeyframeVideoProviderEnabled()) {
-    return getKeyframeVideoProviderStatus();
+interface GrokImagineVideoProviderConfig {
+  id: string;
+  baseUrl: string;
+  apiKey?: string;
+  videoModel: string;
+  downloadProxyUrl?: string;
+  timeoutMs: number;
+  pollIntervalMs: number;
+}
+
+interface VideoProviderSelectionOptions {
+  providerKind?: VideoProviderKind;
+}
+
+export function getVideoProviderStatus(options: VideoProviderSelectionOptions = {}): VideoProviderStatus {
+  if (options.providerKind) {
+    return getRequestedVideoProviderStatus(options.providerKind);
   }
 
   const localConfig = getLocalVideoProviderConfig();
   if (localConfig) {
-    if (localConfig.kind === "keyframe-image") {
-      return {
-        id: "keyframe-image",
-        configured: true,
-        supportsTextToVideo: true,
-        supportsImageToVideo: false,
-        message: "Local keyframe image video provider is configured."
-      };
-    }
+    return localVideoProviderStatus(localConfig);
+  }
 
-    const supportsTextToVideo = Boolean(localConfig.baseUrl || localConfig.textToVideoUrl);
-    const supportsImageToVideo = Boolean(localConfig.baseUrl || localConfig.imageToVideoUrl);
+  if (isKeyframeVideoProviderEnabled()) {
+    return getKeyframeVideoProviderStatus();
+  }
 
-    return {
-      id: "custom-http",
-      configured: supportsTextToVideo || supportsImageToVideo,
-      supportsTextToVideo,
-      supportsImageToVideo,
-      message: "Local custom HTTP video provider is configured."
-    };
+  if (isGrokImagineVideoProviderEnabled()) {
+    return envGrokImagineStatus();
   }
 
   const config = getCustomHttpVideoProviderConfig();
@@ -127,7 +144,7 @@ export function getVideoProviderStatus(): VideoProviderStatus {
   };
 }
 
-export function getConfiguredVideoProvider():
+export function getConfiguredVideoProvider(options: VideoProviderSelectionOptions = {}):
   | {
       ok: true;
       provider: VideoProvider;
@@ -138,6 +155,32 @@ export function getConfiguredVideoProvider():
       error: VideoProviderError;
       status: VideoProviderStatus;
     } {
+  if (options.providerKind) {
+    return getRequestedConfiguredVideoProvider(options.providerKind);
+  }
+
+  const localConfig = getLocalVideoProviderConfig();
+  if (localConfig) {
+    const status = localVideoProviderStatus(localConfig);
+    if (!status.configured) {
+      return {
+        ok: false,
+        status,
+        error: new VideoProviderError(
+          "video_provider_not_configured",
+          "Video generation is not configured. Set a local video provider endpoint first.",
+          503
+        )
+      };
+    }
+
+    return {
+      ok: true,
+      status,
+      provider: createLocalVideoProvider(localConfig)
+    };
+  }
+
   if (isKeyframeVideoProviderEnabled()) {
     const status = getKeyframeVideoProviderStatus();
     if (!status.configured) {
@@ -159,46 +202,25 @@ export function getConfiguredVideoProvider():
     };
   }
 
-  const localConfig = getLocalVideoProviderConfig();
-  if (localConfig) {
-    const status = getVideoProviderStatus();
+  if (isGrokImagineVideoProviderEnabled()) {
+    const status = envGrokImagineStatus();
+
     if (!status.configured) {
       return {
         ok: false,
         status,
         error: new VideoProviderError(
           "video_provider_not_configured",
-          "Video generation is not configured. Set a local video provider endpoint first.",
+          "Grok Imagine video generation requires VIDEO_PROVIDER_URL and VIDEO_PROVIDER_API_KEY.",
           503
         )
-      };
-    }
-
-    if (localConfig.kind === "keyframe-image") {
-      return {
-        ok: true,
-        status,
-        provider: createLocalKeyframeVideoProvider({
-          videoConfig: localConfig,
-          imageModel: getConfiguredImageModel(),
-          imageTimeoutMs: DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
-        })
       };
     }
 
     return {
       ok: true,
       status,
-      provider: new CustomHttpVideoProvider({
-        id: "custom-http",
-        endpointUrl: localConfig.baseUrl,
-        textToVideoUrl: localConfig.textToVideoUrl,
-        imageToVideoUrl: localConfig.imageToVideoUrl,
-        statusUrl: localConfig.statusUrl,
-        apiKey: localConfig.apiKey,
-        timeoutMs: localConfig.timeoutMs,
-        pollIntervalMs: localConfig.pollIntervalMs
-      })
+      provider: new GrokImagineVideoProvider(getGrokImagineVideoProviderConfig())
     };
   }
 
@@ -221,6 +243,211 @@ export function getConfiguredVideoProvider():
     ok: true,
     status,
     provider: new CustomHttpVideoProvider(config)
+  };
+}
+
+function getRequestedVideoProviderStatus(providerKind: VideoProviderKind): VideoProviderStatus {
+  if (providerKind === "keyframe-image" && isKeyframeVideoProviderEnabled()) {
+    return getKeyframeVideoProviderStatus();
+  }
+
+  if (providerKind === GROK_IMAGINE_PROVIDER_KIND && isGrokImagineVideoProviderEnabled()) {
+    return envGrokImagineStatus();
+  }
+
+  const localConfig = getLocalVideoProviderConfig(providerKind);
+  if (localConfig?.kind === providerKind) {
+    return localVideoProviderStatus(localConfig);
+  }
+
+  if (providerKind === "custom-http" && !isKeyframeVideoProviderEnabled() && !isGrokImagineVideoProviderEnabled()) {
+    return customHttpVideoProviderStatus(getCustomHttpVideoProviderConfig());
+  }
+
+  return missingRequestedVideoProviderStatus(providerKind);
+}
+
+function getRequestedConfiguredVideoProvider(providerKind: VideoProviderKind):
+  | {
+      ok: true;
+      provider: VideoProvider;
+      status: VideoProviderStatus;
+    }
+  | {
+      ok: false;
+      error: VideoProviderError;
+      status: VideoProviderStatus;
+    } {
+  const status = getRequestedVideoProviderStatus(providerKind);
+  if (!status.configured) {
+    return {
+      ok: false,
+      status,
+      error: new VideoProviderError(
+        "video_provider_not_configured",
+        `The requested ${providerKind} video provider is not configured.`,
+        503
+      )
+    };
+  }
+
+  if (providerKind === "keyframe-image" && isKeyframeVideoProviderEnabled()) {
+    return {
+      ok: true,
+      status,
+      provider: createKeyframeVideoProvider()
+    };
+  }
+
+  if (providerKind === GROK_IMAGINE_PROVIDER_KIND && isGrokImagineVideoProviderEnabled()) {
+    return {
+      ok: true,
+      status,
+      provider: new GrokImagineVideoProvider(getGrokImagineVideoProviderConfig())
+    };
+  }
+
+  const localConfig = getLocalVideoProviderConfig(providerKind);
+  if (localConfig?.kind === providerKind) {
+    return {
+      ok: true,
+      status,
+      provider: createLocalVideoProvider(localConfig)
+    };
+  }
+
+  if (providerKind === "custom-http") {
+    return {
+      ok: true,
+      status,
+      provider: new CustomHttpVideoProvider(getCustomHttpVideoProviderConfig())
+    };
+  }
+
+  return {
+    ok: false,
+    status,
+    error: new VideoProviderError(
+      "video_provider_not_configured",
+      `The requested ${providerKind} video provider is not configured.`,
+      503
+    )
+  };
+}
+
+function createLocalVideoProvider(localConfig: NonNullable<ReturnType<typeof getLocalVideoProviderConfig>>): VideoProvider {
+  if (localConfig.kind === "keyframe-image") {
+    return createLocalKeyframeVideoProvider({
+      videoConfig: localConfig,
+      imageModel: getConfiguredImageModel(),
+      imageTimeoutMs: DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+    });
+  }
+
+  if (localConfig.kind === GROK_IMAGINE_PROVIDER_KIND) {
+    return new GrokImagineVideoProvider({
+      id: GROK_IMAGINE_PROVIDER_KIND,
+      baseUrl: requiredGrokImagineBaseUrl(localConfig.baseUrl),
+      apiKey: localConfig.apiKey,
+      videoModel: localConfig.videoModel || GROK_IMAGINE_DEFAULT_VIDEO_MODEL,
+      downloadProxyUrl: getVideoProviderDownloadProxyUrl(),
+      timeoutMs: localConfig.timeoutMs,
+      pollIntervalMs: localConfig.pollIntervalMs
+    });
+  }
+
+  return new CustomHttpVideoProvider({
+    id: "custom-http",
+    endpointUrl: localConfig.baseUrl,
+    textToVideoUrl: localConfig.textToVideoUrl,
+    imageToVideoUrl: localConfig.imageToVideoUrl,
+    statusUrl: localConfig.statusUrl,
+    apiKey: localConfig.apiKey,
+    downloadProxyUrl: getVideoProviderDownloadProxyUrl(),
+    timeoutMs: localConfig.timeoutMs,
+    pollIntervalMs: localConfig.pollIntervalMs
+  });
+}
+
+function localVideoProviderStatus(localConfig: NonNullable<ReturnType<typeof getLocalVideoProviderConfig>>): VideoProviderStatus {
+  if (localConfig.kind === "keyframe-image") {
+    const configured = Boolean(localConfig.apiKey || process.env.OPENAI_API_KEY?.trim());
+
+    return {
+      id: "keyframe-image",
+      configured,
+      supportsTextToVideo: configured,
+      supportsImageToVideo: false,
+      message: configured
+        ? "Local keyframe image video provider is configured."
+        : "Set an OpenAI API key to enable local keyframe video generation."
+    };
+  }
+
+  if (localConfig.kind === GROK_IMAGINE_PROVIDER_KIND) {
+    const configured = Boolean(localConfig.apiKey && localConfig.baseUrl);
+
+    return {
+      id: GROK_IMAGINE_PROVIDER_KIND,
+      configured,
+      supportsTextToVideo: configured,
+      supportsImageToVideo: false,
+      message: configured
+        ? "Local Grok Imagine video provider is configured."
+        : "Set a Grok Imagine base URL and API key to enable video generation."
+    };
+  }
+
+  const supportsTextToVideo = Boolean(localConfig.baseUrl || localConfig.textToVideoUrl);
+  const supportsImageToVideo = Boolean(localConfig.baseUrl || localConfig.imageToVideoUrl);
+
+  return {
+    id: "custom-http",
+    configured: supportsTextToVideo || supportsImageToVideo,
+    supportsTextToVideo,
+    supportsImageToVideo,
+    message: "Local custom HTTP video provider is configured."
+  };
+}
+
+function envGrokImagineStatus(): VideoProviderStatus {
+  const config = getGrokImagineVideoProviderConfigView();
+  const configured = Boolean(config.apiKey && config.baseUrl);
+
+  return {
+    id: config.id,
+    configured,
+    supportsTextToVideo: configured,
+    supportsImageToVideo: false,
+    message: configured
+      ? "Grok Imagine video provider is configured."
+      : "Set VIDEO_PROVIDER_URL and VIDEO_PROVIDER_API_KEY to enable Grok Imagine video generation."
+  };
+}
+
+function customHttpVideoProviderStatus(config: CustomHttpVideoProviderConfig): VideoProviderStatus {
+  const supportsTextToVideo = Boolean(config.endpointUrl || config.textToVideoUrl);
+  const supportsImageToVideo = Boolean(config.endpointUrl || config.imageToVideoUrl);
+  const configured = supportsTextToVideo || supportsImageToVideo;
+
+  return {
+    id: config.id,
+    configured,
+    supportsTextToVideo,
+    supportsImageToVideo,
+    message: configured
+      ? "Custom HTTP video provider is configured."
+      : "Set VIDEO_PROVIDER_URL, VIDEO_PROVIDER_TEXT_TO_VIDEO_URL, or VIDEO_PROVIDER_IMAGE_TO_VIDEO_URL to enable video generation."
+  };
+}
+
+function missingRequestedVideoProviderStatus(providerKind: VideoProviderKind): VideoProviderStatus {
+  return {
+    id: providerKind,
+    configured: false,
+    supportsTextToVideo: false,
+    supportsImageToVideo: false,
+    message: `The requested ${providerKind} video provider is not configured.`
   };
 }
 
@@ -272,6 +499,86 @@ class CustomHttpVideoProvider implements VideoProvider {
   }
 }
 
+class GrokImagineVideoProvider implements VideoProvider {
+  readonly id: string;
+
+  constructor(private readonly config: GrokImagineVideoProviderConfig) {
+    this.id = config.id;
+  }
+
+  async generate(input: VideoProviderInput, signal?: AbortSignal): Promise<VideoProviderOutput> {
+    if (input.mode === "image_to_video") {
+      throw new VideoProviderError(
+        "unsupported_video_mode",
+        "The Grok Imagine video provider currently supports text-to-video only.",
+        400
+      );
+    }
+
+    input.onProgress?.({
+      progressPercent: 5,
+      progressStage: "preparing",
+      progressMessage: "Creating Grok Imagine video task."
+    });
+
+    const deadline = Date.now() + this.config.timeoutMs;
+    const createUrl = joinProviderPath(this.config.baseUrl, "videos");
+    const response = await fetchWithTimeout(
+      createUrl,
+      {
+        method: "POST",
+        headers: requestHeaders(this.config, { includeContentType: true }),
+        body: JSON.stringify({
+          prompt: input.prompt,
+          model: this.config.videoModel,
+          seconds: String(input.durationSeconds),
+          size: videoSizeString(input.size)
+        }),
+        signal
+      },
+      remainingTimeoutMs(deadline)
+    );
+
+    if (!response.ok) {
+      throw new VideoProviderError(
+        "upstream_failure",
+        await upstreamErrorMessage(response),
+        providerHttpStatus(response.status)
+      );
+    }
+
+    if (mediaType(response.headers.get("content-type")) !== "application/json") {
+      throw new VideoProviderError(
+        "unsupported_provider_behavior",
+        "Grok Imagine provider returned a non-JSON task response.",
+        502
+      );
+    }
+
+    const body = await response.json() as unknown;
+    const taskId = grokImagineTaskIdFromJson(body);
+    if (!taskId) {
+      throw new VideoProviderError(
+        "unsupported_provider_behavior",
+        "Grok Imagine provider task response did not include a task id.",
+        502
+      );
+    }
+
+    input.onProgress?.({
+      progressPercent: 10,
+      progressStage: "running",
+      progressMessage: "Grok Imagine video task is running.",
+      providerJobId: taskId
+    });
+
+    return pollGrokImagineVideoTask({
+      taskId,
+      statusUrl: joinProviderPath(this.config.baseUrl, `videos/${encodeURIComponent(taskId)}`)
+    }, input, signal, this.config, deadline);
+  }
+}
+
 function getCustomHttpVideoProviderConfig(): CustomHttpVideoProviderConfig {
   return {
     id: process.env.VIDEO_PROVIDER_ID?.trim() || "custom-http",
@@ -280,9 +587,66 @@ function getCustomHttpVideoProviderConfig(): CustomHttpVideoProviderConfig {
     imageToVideoUrl: normalizedEnvUrl(process.env.VIDEO_PROVIDER_IMAGE_TO_VIDEO_URL),
     statusUrl: normalizedEnvUrlTemplate(process.env.VIDEO_PROVIDER_STATUS_URL),
     apiKey: process.env.VIDEO_PROVIDER_API_KEY?.trim() || undefined,
+    downloadProxyUrl: getVideoProviderDownloadProxyUrl(),
     timeoutMs: parsePositiveInteger(process.env.VIDEO_PROVIDER_TIMEOUT_MS, DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS),
     pollIntervalMs: parsePositiveInteger(process.env.VIDEO_PROVIDER_POLL_INTERVAL_MS, DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS)
   };
+}
+
+function isGrokImagineVideoProviderEnabled(): boolean {
+  return process.env.VIDEO_PROVIDER_KIND?.trim().toLowerCase() === GROK_IMAGINE_PROVIDER_KIND;
+}
+
+function getGrokImagineVideoProviderConfig(): GrokImagineVideoProviderConfig {
+  const config = getGrokImagineVideoProviderConfigView();
+  return {
+    id: GROK_IMAGINE_PROVIDER_KIND,
+    baseUrl: requiredGrokImagineBaseUrl(config.baseUrl),
+    apiKey: config.apiKey,
+    videoModel: config.videoModel,
+    downloadProxyUrl: config.downloadProxyUrl,
+    timeoutMs: config.timeoutMs,
+    pollIntervalMs: config.pollIntervalMs
+  };
+}
+
+function getGrokImagineVideoProviderConfigView(): Omit<GrokImagineVideoProviderConfig, "baseUrl"> & {
+  baseUrl?: string;
+} {
+  return {
+    id: GROK_IMAGINE_PROVIDER_KIND,
+    baseUrl: normalizedEnvUrl(process.env.VIDEO_PROVIDER_URL),
+    apiKey: process.env.VIDEO_PROVIDER_API_KEY?.trim() || undefined,
+    videoModel: process.env.VIDEO_PROVIDER_MODEL?.trim() || GROK_IMAGINE_DEFAULT_VIDEO_MODEL,
+    downloadProxyUrl: getVideoProviderDownloadProxyUrl(),
+    timeoutMs: parsePositiveInteger(process.env.VIDEO_PROVIDER_TIMEOUT_MS, DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS),
+    pollIntervalMs: parsePositiveInteger(process.env.VIDEO_PROVIDER_POLL_INTERVAL_MS, DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS)
+  };
+}
+
+function requiredGrokImagineBaseUrl(value: string | undefined): string {
+  if (!value) {
+    throw new VideoProviderError(
+      "video_provider_not_configured",
+      "Grok Imagine video generation requires VIDEO_PROVIDER_URL.",
+      503
+    );
+  }
+
+  return value;
+}
+
+function getVideoProviderDownloadProxyUrl(): string | undefined {
+  return (
+    normalizedEnvUrl(process.env.VIDEO_PROVIDER_DOWNLOAD_PROXY_URL) ??
+    normalizedEnvUrl(process.env.HTTPS_PROXY) ??
+    normalizedEnvUrl(process.env.https_proxy) ??
+    normalizedEnvUrl(process.env.HTTP_PROXY) ??
+    normalizedEnvUrl(process.env.http_proxy) ??
+    normalizedEnvUrl(process.env.ALL_PROXY) ??
+    normalizedEnvUrl(process.env.all_proxy) ??
+    getWindowsSystemProxyUrl()
+  );
 }
 
 function endpointForMode(config: CustomHttpVideoProviderConfig, mode: VideoGenerationMode): string | undefined {
@@ -410,12 +774,41 @@ async function providerOutputFromPayload(
   deadline: number,
   baseUrl: string
 ): Promise<VideoProviderOutput | undefined> {
-  const mimeType = stringValue(payload.mimeType) ?? stringValue(payload.contentType);
-  const fileName = stringValue(payload.fileName) ?? stringValue(payload.filename);
-  const providerJobId = stringValue(payload.providerJobId) ?? stringValue(payload.jobId);
-  const dataUrl = stringValue(payload.dataUrl) ?? stringValue(payload.videoDataUrl);
-  const base64 = stringValue(payload.videoBase64) ?? stringValue(payload.b64Json) ?? stringValue(payload.base64);
-  const url = stringValue(payload.url) ?? stringValue(payload.videoUrl) ?? stringValue(payload.downloadUrl);
+  const videoPayload = isRecord(payload.video) ? payload.video : undefined;
+  const mimeType = stringValue(payload.mimeType) ?? stringValue(payload.contentType) ?? stringValue(videoPayload?.mimeType) ?? stringValue(videoPayload?.contentType);
+  const fileName = stringValue(payload.fileName) ?? stringValue(payload.filename) ?? stringValue(videoPayload?.fileName) ?? stringValue(videoPayload?.filename);
+  const providerJobId =
+    stringValue(payload.providerJobId) ??
+    stringValue(payload.jobId) ??
+    stringValue(payload.request_id) ??
+    stringValue(payload.requestId) ??
+    stringValue(payload.task_id) ??
+    stringValue(payload.taskId) ??
+    stringValue(videoPayload?.providerJobId) ??
+    stringValue(videoPayload?.jobId) ??
+    stringValue(videoPayload?.request_id) ??
+    stringValue(videoPayload?.requestId) ??
+    stringValue(videoPayload?.task_id) ??
+    stringValue(videoPayload?.taskId);
+  const dataUrl = stringValue(payload.dataUrl) ?? stringValue(payload.videoDataUrl) ?? stringValue(videoPayload?.dataUrl) ?? stringValue(videoPayload?.videoDataUrl);
+  const base64 =
+    stringValue(payload.videoBase64) ??
+    stringValue(payload.b64Json) ??
+    stringValue(payload.base64) ??
+    stringValue(videoPayload?.videoBase64) ??
+    stringValue(videoPayload?.b64Json) ??
+    stringValue(videoPayload?.base64);
+  const url =
+    stringValue(payload.url) ??
+    stringValue(payload.videoUrl) ??
+    stringValue(payload.video_url) ??
+    stringValue(payload.downloadUrl) ??
+    stringValue(payload.download_url) ??
+    stringValue(videoPayload?.url) ??
+    stringValue(videoPayload?.videoUrl) ??
+    stringValue(videoPayload?.video_url) ??
+    stringValue(videoPayload?.downloadUrl) ??
+    stringValue(videoPayload?.download_url);
 
   if (dataUrl) {
     return videoFromDataUrl(dataUrl, fileName, providerJobId);
@@ -565,6 +958,135 @@ async function pollProviderVideoJob(
   throw new VideoProviderError("upstream_failure", "Video provider job timed out.", 504);
 }
 
+async function pollGrokImagineVideoTask(
+  task: {
+    taskId: string;
+    statusUrl: string;
+  },
+  input: VideoProviderInput,
+  signal: AbortSignal | undefined,
+  config: GrokImagineVideoProviderConfig,
+  deadline: number
+): Promise<VideoProviderOutput> {
+  while (Date.now() < deadline) {
+    await delay(config.pollIntervalMs, signal);
+
+    const response = await fetchWithTimeout(
+      task.statusUrl,
+      {
+        method: "GET",
+        headers: requestHeaders(config, { includeContentType: false }),
+        signal
+      },
+      remainingTimeoutMs(deadline)
+    );
+    if (!response.ok) {
+      throw new VideoProviderError(
+        "upstream_failure",
+        await upstreamErrorMessage(response),
+        providerHttpStatus(response.status)
+      );
+    }
+
+    const contentType = mediaType(response.headers.get("content-type"));
+    if (isVideoMimeType(contentType)) {
+      return {
+        bytes: await readResponseBytes(response),
+        mimeType: contentType,
+        providerJobId: task.taskId
+      };
+    }
+    if (contentType !== "application/json") {
+      throw new VideoProviderError(
+        "unsupported_provider_behavior",
+        "Grok Imagine provider returned a non-video content type.",
+        502
+      );
+    }
+
+    const body = await response.json() as unknown;
+    const payload = firstVideoPayload(body);
+    const progress = grokImagineProgressFromJson(body, payload, task.taskId);
+    if (progress) {
+      input.onProgress?.(progress);
+    }
+
+    if (payload) {
+      const output = await providerOutputFromPayload(payload, signal, config, deadline, task.statusUrl);
+      if (output) {
+        return output.providerJobId ? output : { ...output, providerJobId: task.taskId };
+      }
+    }
+
+    const status = grokImagineStatusFromJson(body, payload);
+    if (isFailureStatus(status)) {
+      throw new VideoProviderError(
+        "upstream_failure",
+        providerFailureMessage(body, payload),
+        502
+      );
+    }
+    if (isSuccessStatus(status)) {
+      throw new VideoProviderError(
+        "unsupported_provider_behavior",
+        "Grok Imagine provider marked the task complete without a video result.",
+        502
+      );
+    }
+  }
+
+  throw new VideoProviderError("upstream_failure", "Grok Imagine video task timed out.", 504);
+}
+
+function grokImagineTaskIdFromJson(body: unknown): string | undefined {
+  const payload = firstVideoPayload(body);
+  const source = payload ?? (isRecord(body) ? body : undefined);
+  return stringValue(source?.request_id) ?? stringValue(source?.requestId) ?? stringValue(source?.task_id) ?? stringValue(source?.taskId) ?? stringValue(source?.id);
+}
+
+function grokImagineStatusFromJson(body: unknown, payload: Record<string, unknown> | undefined): string | undefined {
+  const source = payload ?? (isRecord(body) ? body : undefined);
+  return stringValue(source?.status)?.toLowerCase();
+}
+
+function grokImagineProgressFromJson(
+  body: unknown,
+  payload: Record<string, unknown> | undefined,
+  taskId: string
+): VideoProviderProgress | undefined {
+  const source = payload ?? (isRecord(body) ? body : undefined);
+  if (!source) {
+    return undefined;
+  }
+
+  const rawProgress = numericValue(source.progress) ?? numericValue(source.progressPercent) ?? numericValue(source.progress_percent);
+  if (rawProgress === undefined) {
+    return undefined;
+  }
+
+  const status = grokImagineStatusFromJson(body, payload);
+  const message =
+    stringValue(source.message) ??
+    stringValue(source.progressMessage) ??
+    stringValue(source.progress_message) ??
+    (status ? `Grok Imagine task ${status}.` : "Grok Imagine video task is running.");
+
+  return {
+    progressPercent: rawProgress > 0 && rawProgress <= 1 ? rawProgress * 100 : rawProgress,
+    progressStage: isSuccessStatus(status) ? "saving" : "running",
+    progressMessage: sanitizeVideoErrorMessage(message),
+    providerJobId: taskId
+  };
+}
+
+function isSuccessStatus(status: string | undefined): boolean {
+  return status === "succeeded" || status === "success" || status === "completed" || status === "complete" || status === "done" || status === "finished";
+}
+
+function isFailureStatus(status: string | undefined): boolean {
+  return status === "failed" || status === "failure" || status === "cancelled" || status === "canceled" || status === "error";
+}
+
 function providerStatusFromJson(body: unknown, payload: Record<string, unknown> | undefined): string | undefined {
   const source = payload ?? (isRecord(body) ? body : undefined);
   return stringValue(source?.status)?.toLowerCase();
@@ -607,35 +1129,542 @@ async function downloadProviderVideoUrl(
   if (!parsedUrl) {
     throw new VideoProviderError("unsupported_provider_behavior", "Video provider returned an unsupported video URL.", 502);
   }
+  const downloadHeaders = requestHeadersForVideoDownload(config, parsedUrl, baseUrl);
 
-  const response = await fetchWithTimeout(
-    parsedUrl.toString(),
-    {
-      headers: requestHeaders(config, { includeContentType: false }),
-      signal
-    },
-    remainingTimeoutMs(deadline)
-  );
-  if (!response.ok) {
-    throw new VideoProviderError("upstream_failure", "Video provider video download failed.", providerHttpStatus(response.status));
+  let lastRetryableError: VideoProviderError | undefined;
+  for (let attempt = 1; attempt <= MAX_PROVIDER_VIDEO_DOWNLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetchProviderVideoDownload(
+        parsedUrl,
+        {
+          headers: downloadHeaders,
+          signal
+        },
+        config,
+        baseUrl,
+        remainingTimeoutMs(deadline)
+      );
+      if (!response.ok) {
+        const error = new VideoProviderError(
+          "upstream_failure",
+          `Video provider video download from ${parsedUrl.hostname} failed with status ${response.status}.`,
+          providerHttpStatus(response.status)
+        );
+        if (attempt < MAX_PROVIDER_VIDEO_DOWNLOAD_ATTEMPTS && isRetryableVideoDownloadError(error)) {
+          lastRetryableError = error;
+          await delay(PROVIDER_VIDEO_DOWNLOAD_RETRY_DELAY_MS * attempt, signal);
+          continue;
+        }
+        if (isRetryableVideoDownloadError(error)) {
+          throw decorateVideoDownloadError(error, parsedUrl, Boolean(config.downloadProxyUrl), options.providerJobId);
+        }
+        throw error;
+      }
+
+      const mimeType = normalizedVideoMimeType(response.headers.get("content-type"));
+
+      if (!mimeType) {
+        throw new VideoProviderError(
+          "unsupported_provider_behavior",
+          "Video provider download did not return a video content type.",
+          502
+        );
+      }
+
+      return {
+        bytes: await readResponseBytes(response),
+        mimeType,
+        fileName: options.fileName,
+        providerJobId: options.providerJobId
+      };
+    } catch (error) {
+      if (error instanceof VideoProviderError && isRetryableVideoDownloadError(error)) {
+        if (attempt < MAX_PROVIDER_VIDEO_DOWNLOAD_ATTEMPTS) {
+          lastRetryableError = error;
+          await delay(PROVIDER_VIDEO_DOWNLOAD_RETRY_DELAY_MS * attempt, signal);
+          continue;
+        }
+
+        throw decorateVideoDownloadError(error, parsedUrl, Boolean(config.downloadProxyUrl), options.providerJobId);
+      }
+
+      throw error;
+    }
   }
 
-  const mimeType = normalizedVideoMimeType(response.headers.get("content-type"));
+  throw decorateVideoDownloadError(lastRetryableError, parsedUrl, Boolean(config.downloadProxyUrl), options.providerJobId) ?? new VideoProviderError(
+    "upstream_failure",
+    `Video provider video download from ${parsedUrl.hostname} failed.`,
+    502
+  );
+}
 
-  if (!mimeType) {
+async function fetchProviderVideoDownload(
+  parsedUrl: URL,
+  init: {
+    headers: HeadersInit;
+    signal: AbortSignal | undefined;
+  },
+  config: CustomHttpVideoProviderConfig,
+  baseUrl: string,
+  timeoutMs: number,
+  redirectCount = 0
+): Promise<Response> {
+  const response = config.downloadProxyUrl
+    ? await fetchWithDownloadProxy(parsedUrl, init.headers, config.downloadProxyUrl, init.signal, timeoutMs)
+    : await fetchWithTimeout(
+        parsedUrl.toString(),
+        {
+          headers: init.headers,
+          signal: init.signal
+        },
+        timeoutMs
+      );
+
+  if (!isRedirectStatus(response.status)) {
+    return response;
+  }
+
+  if (redirectCount >= MAX_PROVIDER_VIDEO_DOWNLOAD_REDIRECTS) {
+    throw new VideoProviderError("upstream_failure", "Video provider video download followed too many redirects.", 502);
+  }
+
+  const location = response.headers.get("location");
+  const redirectedUrl = location ? parseProviderUrl(resolveProviderUrl(location, parsedUrl.toString()) ?? "") : undefined;
+  if (!redirectedUrl) {
+    throw new VideoProviderError("upstream_failure", "Video provider video download returned an invalid redirect.", 502);
+  }
+
+  return fetchProviderVideoDownload(
+    redirectedUrl,
+    {
+      headers: requestHeadersForVideoDownload(config, redirectedUrl, baseUrl),
+      signal: init.signal
+    },
+    config,
+    baseUrl,
+    timeoutMs,
+    redirectCount + 1
+  );
+}
+
+function requestHeadersForVideoDownload(
+  config: CustomHttpVideoProviderConfig,
+  downloadUrl: URL,
+  baseUrl: string
+): HeadersInit {
+  const headers = headersToRecord(requestHeaders(config, { includeContentType: false }));
+  if (!isSameOrigin(downloadUrl, baseUrl)) {
+    delete headers.Authorization;
+    delete headers.authorization;
+  }
+
+  return headers;
+}
+
+function isSameOrigin(url: URL, baseUrl: string): boolean {
+  const parsedBaseUrl = parseProviderUrl(baseUrl);
+  return Boolean(parsedBaseUrl && parsedBaseUrl.origin === url.origin);
+}
+
+async function fetchWithDownloadProxy(
+  targetUrl: URL,
+  headers: HeadersInit,
+  proxyUrlValue: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<Response> {
+  const proxyUrl = parseProxyUrl(proxyUrlValue);
+  if (!proxyUrl) {
+    throw new VideoProviderError("upstream_failure", "VIDEO_PROVIDER_DOWNLOAD_PROXY_URL must be an http or https URL.", 502);
+  }
+
+  try {
+    if (targetUrl.protocol === "http:") {
+      return await fetchHttpUrlViaProxy(targetUrl, headersToRecord(headers), proxyUrl, signal, timeoutMs);
+    }
+
+    return await fetchHttpsUrlViaProxy(targetUrl, headersToRecord(headers), proxyUrl, signal, timeoutMs);
+  } catch (error) {
+    if (error instanceof VideoProviderError) {
+      throw error;
+    }
+
+    const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
     throw new VideoProviderError(
-      "unsupported_provider_behavior",
-      "Video provider download did not return a video content type.",
+      "upstream_failure",
+      sanitizeVideoErrorMessage(`Video provider video download from ${targetUrl.hostname} through VIDEO_PROVIDER_DOWNLOAD_PROXY_URL failed.${detail}`),
       502
     );
   }
+}
 
-  return {
-    bytes: await readResponseBytes(response),
-    mimeType,
-    fileName: options.fileName,
-    providerJobId: options.providerJobId
+function fetchHttpUrlViaProxy(
+  targetUrl: URL,
+  headers: Record<string, string>,
+  proxyUrl: URL,
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    let cleanup = (): void => undefined;
+    const request = proxyRequest(proxyUrl)({
+      method: "GET",
+      hostname: proxyUrl.hostname,
+      port: proxyPort(proxyUrl),
+      path: targetUrl.toString(),
+      headers: {
+        ...headers,
+        Host: targetUrl.host,
+        Connection: "close",
+        ...proxyAuthorizationHeaders(proxyUrl)
+      }
+    }, (response) => {
+      collectIncomingResponse(response).then((proxiedResponse) => {
+        cleanup();
+        resolve(proxiedResponse);
+      }, (error) => {
+        cleanup();
+        reject(error);
+      });
+    });
+
+    cleanup = attachNodeRequestLifecycle({
+      request,
+      signal,
+      timeoutMs
+    });
+
+    request.on("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    request.end();
+  });
+}
+
+function fetchHttpsUrlViaProxy(
+  targetUrl: URL,
+  headers: Record<string, string>,
+  proxyUrl: URL,
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const connectRequest = proxyRequest(proxyUrl)({
+      method: "CONNECT",
+      hostname: proxyUrl.hostname,
+      port: proxyPort(proxyUrl),
+      path: `${targetUrl.hostname}:${targetPort(targetUrl)}`,
+      headers: {
+        Host: `${targetUrl.hostname}:${targetPort(targetUrl)}`,
+        ...proxyAuthorizationHeaders(proxyUrl)
+      }
+    });
+    let cleanupTarget: (() => void) | undefined;
+
+    const cleanupConnect = attachNodeRequestLifecycle({
+      request: connectRequest,
+      signal,
+      timeoutMs
+    });
+
+    connectRequest.on("connect", (connectResponse, socket) => {
+      cleanupConnect();
+      if ((connectResponse.statusCode ?? 502) !== 200) {
+        socket.destroy();
+        resolve(new Response(null, {
+          status: responseHttpStatus(connectResponse.statusCode),
+          headers: incomingHeadersToRecord(connectResponse.headers)
+        }));
+        return;
+      }
+
+      const tlsSocket = tlsConnect({
+        socket,
+        servername: targetUrl.hostname
+      });
+
+      const abort = (): void => {
+        tlsSocket.destroy(new VideoProviderError("upstream_failure", "Video provider request timed out or was cancelled.", 504));
+      };
+      const timeout = setTimeout(abort, timeoutMs);
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+      signal?.addEventListener("abort", abort, { once: true });
+
+      const cleanupTls = (): void => {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", abort);
+      };
+
+      tlsSocket.once("secureConnect", () => {
+        const agent = new HttpAgent({ keepAlive: false });
+        agent.createConnection = () => tlsSocket;
+        const targetRequest = httpRequest({
+          method: "GET",
+          hostname: targetUrl.hostname,
+          port: targetPort(targetUrl),
+          path: pathWithSearch(targetUrl),
+          headers: {
+            ...headers,
+            Host: targetUrl.host,
+            Connection: "close"
+          },
+          agent
+        }, (response) => {
+          collectIncomingResponse(response).then((proxiedResponse) => {
+            cleanupTls();
+            cleanupTarget?.();
+            resolve(proxiedResponse);
+          }, (error) => {
+            cleanupTls();
+            cleanupTarget?.();
+            reject(error);
+          });
+        });
+
+        cleanupTarget = attachNodeRequestLifecycle({
+          request: targetRequest,
+          signal,
+          timeoutMs
+        });
+        targetRequest.on("error", (error) => {
+          cleanupTls();
+          cleanupTarget?.();
+          reject(error);
+        });
+        targetRequest.end();
+      });
+
+      tlsSocket.once("error", (error) => {
+        cleanupTls();
+        cleanupTarget?.();
+        reject(error);
+      });
+    });
+
+    connectRequest.on("error", (error) => {
+      cleanupConnect();
+      cleanupTarget?.();
+      reject(error);
+    });
+    connectRequest.end();
+  });
+}
+
+function attachNodeRequestLifecycle(input: {
+  request: ReturnType<typeof httpRequest>;
+  signal: AbortSignal | undefined;
+  timeoutMs: number;
+}): () => void {
+  const abort = (): void => {
+    input.request.destroy(new VideoProviderError("upstream_failure", "Video provider request timed out or was cancelled.", 504));
   };
+  const timeout = setTimeout(abort, input.timeoutMs);
+
+  if (input.signal?.aborted) {
+    abort();
+  } else {
+    input.signal?.addEventListener("abort", abort, { once: true });
+  }
+
+  return () => {
+    clearTimeout(timeout);
+    input.signal?.removeEventListener("abort", abort);
+  };
+}
+
+function collectIncomingResponse(response: IncomingMessage): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    response.on("data", (chunk: Buffer) => chunks.push(chunk));
+    response.on("error", reject);
+    response.on("end", () => {
+      resolve(new Response(Buffer.concat(chunks), {
+        status: responseHttpStatus(response.statusCode),
+        headers: incomingHeadersToRecord(response.headers)
+      }));
+    });
+  });
+}
+
+function incomingHeadersToRecord(headers: IncomingHttpHeaders): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === "string") {
+      result[key] = value;
+    } else if (Array.isArray(value)) {
+      result[key] = value.join(", ");
+    }
+  }
+  return result;
+}
+
+function headersToRecord(headers: HeadersInit): Record<string, string> {
+  if (headers instanceof Headers) {
+    const result: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      result[key] = value;
+    });
+    return result;
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+  return {
+    ...headers
+  };
+}
+
+function proxyRequest(proxyUrl: URL): typeof httpRequest {
+  return proxyUrl.protocol === "https:" ? httpsRequest : httpRequest;
+}
+
+function proxyPort(proxyUrl: URL): number {
+  return Number.parseInt(proxyUrl.port || (proxyUrl.protocol === "https:" ? "443" : "80"), 10);
+}
+
+function targetPort(targetUrl: URL): number {
+  return Number.parseInt(targetUrl.port || (targetUrl.protocol === "https:" ? "443" : "80"), 10);
+}
+
+function pathWithSearch(url: URL): string {
+  return `${url.pathname || "/"}${url.search}`;
+}
+
+function proxyAuthorizationHeaders(proxyUrl: URL): Record<string, string> {
+  if (!proxyUrl.username && !proxyUrl.password) {
+    return {};
+  }
+
+  const username = decodeURIComponent(proxyUrl.username);
+  const password = decodeURIComponent(proxyUrl.password);
+  return {
+    "Proxy-Authorization": `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
+  };
+}
+
+function parseProxyUrl(value: string): URL | undefined {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getWindowsSystemProxyUrl(): string | undefined {
+  if (process.platform !== "win32") {
+    return undefined;
+  }
+  if (cachedWindowsSystemProxyUrl !== undefined) {
+    return cachedWindowsSystemProxyUrl;
+  }
+
+  cachedWindowsSystemProxyUrl = readWindowsSystemProxyUrl();
+  return cachedWindowsSystemProxyUrl;
+}
+
+function readWindowsSystemProxyUrl(): string | undefined {
+  try {
+    const output = execFileSync(
+      "reg",
+      [
+        "query",
+        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+        "/v",
+        "ProxyEnable"
+      ],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 1_000
+      }
+    );
+    if (!/\bProxyEnable\b[^\r\n]*\b0x1\b/iu.test(output)) {
+      return undefined;
+    }
+
+    const proxyOutput = execFileSync(
+      "reg",
+      [
+        "query",
+        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+        "/v",
+        "ProxyServer"
+      ],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 1_000
+      }
+    );
+    const match = /\bProxyServer\b\s+REG_\w+\s+([^\r\n]+)/iu.exec(proxyOutput);
+    return normalizedWindowsProxyServer(match?.[1]);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizedWindowsProxyServer(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const httpsProxy =
+    trimmed
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.toLowerCase().startsWith("https="))
+      ?.slice("https=".length) ??
+    trimmed
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.toLowerCase().startsWith("http="))
+      ?.slice("http=".length) ??
+    trimmed;
+  const proxyUrl = /^[a-z][a-z0-9+.-]*:\/\//iu.test(httpsProxy) ? httpsProxy : `http://${httpsProxy}`;
+  return normalizedEnvUrl(proxyUrl);
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function decorateVideoDownloadError(
+  error: VideoProviderError | undefined,
+  parsedUrl: URL,
+  usedProxy: boolean,
+  providerJobId: string | undefined
+): VideoProviderError | undefined {
+  if (!error) {
+    return undefined;
+  }
+
+  const proxyHint = usedProxy
+    ? "Check VIDEO_PROVIDER_DOWNLOAD_PROXY_URL or the local proxy reachability."
+    : "Configure VIDEO_PROVIDER_DOWNLOAD_PROXY_URL if the provider CDN is unreachable from this machine.";
+  const taskHint = providerJobId ? ` Remote provider task id: ${providerJobId}.` : "";
+
+  return new VideoProviderError(
+    error.code,
+    sanitizeVideoErrorMessage(
+      `Video provider returned a video URL on ${parsedUrl.hostname}, but this server could not download it.${taskHint} ${error.message} ${proxyHint}`
+    ),
+    error.status
+  );
+}
+
+function isRetryableVideoDownloadError(error: VideoProviderError): boolean {
+  return error.code === "upstream_failure" && isRetryableVideoDownloadStatus(error.status);
+}
+
+function isRetryableVideoDownloadStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
 }
 
 async function readResponseBytes(response: Response): Promise<Buffer> {
@@ -732,6 +1761,15 @@ function resolveProviderUrl(value: string, baseUrl: string): string | undefined 
   }
 }
 
+function joinProviderPath(baseUrl: string, path: string): string {
+  const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL(path.replace(/^\/+/u, ""), normalizedBaseUrl).toString();
+}
+
+function videoSizeString(size: { width: number; height: number }): string {
+  return `${size.width}x${size.height}`;
+}
+
 function statusUrlFromTemplate(template: string | undefined, providerJobId: string | undefined): string | undefined {
   if (!template || !providerJobId) {
     return undefined;
@@ -771,6 +1809,10 @@ function providerHttpStatus(status: number | undefined): number {
   return typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? status : 502;
 }
 
+function responseHttpStatus(status: number | undefined): number {
+  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : 502;
+}
+
 function parseContentLength(value: string | null): number | undefined {
   if (!value) {
     return undefined;
@@ -787,6 +1829,17 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numericValue(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseFloat(value.trim())
+        : Number.NaN;
+
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

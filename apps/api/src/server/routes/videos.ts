@@ -1,4 +1,5 @@
 import type { Hono } from "hono";
+import type { VideoProviderKind } from "../../domain/contracts.js";
 import {
   batchDeleteVideoOutputs,
   deleteVideoOutput,
@@ -13,7 +14,9 @@ import { readJson } from "../http/json.js";
 import { parseVideoBatchDeletePayload, parseVideoGeneratePayload } from "../http/validation.js";
 
 export function registerVideoRoutes(app: Hono): void {
-  app.get("/api/videos/provider-status", (c) => c.json(getVideoProviderStatusResponse()));
+  app.get("/api/videos/provider-status", (c) => c.json(getVideoProviderStatusResponse({
+    providerKind: parseVideoProviderKind(c.req.query("providerKind"))
+  })));
 
   app.get("/api/videos", (c) => c.json(getVideoLibrary()));
 
@@ -28,7 +31,9 @@ export function registerVideoRoutes(app: Hono): void {
       return c.json(parsed.error, 400);
     }
 
-    const configuredProvider = getConfiguredVideoProvider();
+    const configuredProvider = getConfiguredVideoProvider({
+      providerKind: parsed.value.providerKind
+    });
     if (!configuredProvider.ok) {
       return videoProviderErrorJson(configuredProvider.error);
     }
@@ -95,6 +100,10 @@ export function registerVideoRoutes(app: Hono): void {
       ok: true
     });
   });
+}
+
+function parseVideoProviderKind(value: string | undefined): VideoProviderKind | undefined {
+  return value === "keyframe-image" || value === "custom-http" || value === "grok-imagine" ? value : undefined;
 }
 
 function videoProviderErrorJson(error: VideoProviderError): Response {

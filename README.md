@@ -161,36 +161,55 @@ pnpm --filter @gpt-image-canvas/api rebuild better-sqlite3 --stream
 
 Docker Compose builds shared contracts, the web app, and the API into one image. The API serves both `/api` and the built web bundle from one localhost port. SQLite data and generated assets persist in host `./data`.
 
+Use the repository startup script to create local `.env` when missing, validate Compose without expanding secrets, and start the container:
+
 Windows PowerShell:
 
 ```powershell
-Copy-Item .env.example .env
-docker compose config --quiet --no-env-resolution
-docker compose up --build
+.\scripts\docker-start.ps1
 ```
 
 macOS/Linux:
 
 ```sh
-cp .env.example .env
+sh scripts/docker-start.sh
+```
+
+For detached mode:
+
+```powershell
+.\scripts\docker-start.ps1 -Detached
+```
+
+```sh
+sh scripts/docker-start.sh --detached
+```
+
+Manual startup is equivalent to:
+
+```sh
 docker compose config --quiet --no-env-resolution
 docker compose up --build
 ```
 
-Open [http://localhost:8787](http://localhost:8787) by default. Set `PORT` in `.env` before starting Compose to use a different localhost port.
+Open [http://localhost:8787](http://localhost:8787) by default. Set `PORT` in `.env` before starting Compose to use a different localhost port, for example `PORT=8788`.
 
 Use `docker compose config --quiet --no-env-resolution` when real credentials exist. Plain `docker compose config` expands env files and can print secrets.
 
 Compose defaults `SQLITE_JOURNAL_MODE=DELETE` and `SQLITE_LOCKING_MODE=EXCLUSIVE` to avoid SQLite shared-memory errors on Docker Desktop bind mounts. Avoid running `pnpm dev` and Docker against the same `data/` directory at the same time.
 
-The Compose build accepts these network-related build args:
+The Compose build accepts these network-related build args, but third-party mirrors are not hardcoded by default. Set them explicitly in `.env` or the shell when your network needs a registry or apt mirror:
 
 - `NODE_IMAGE`
 - `NPM_CONFIG_REGISTRY`
 - `APT_MIRROR`
 - `APT_SECURITY_MIRROR`
 
-The default `NODE_IMAGE` is `node:24.15.0-bookworm-slim`.
+The default `NODE_IMAGE` is `node:24.15.0-bookworm-slim`. Example:
+
+```sh
+NPM_CONFIG_REGISTRY=https://registry.example.com docker compose build
+```
 
 ## Runtime Data And Secrets
 

@@ -10,7 +10,7 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_VIDEO_DURATION_SECONDS,
   VIDEO_ASPECT_RATIOS,
@@ -26,6 +26,7 @@ import {
 } from "@gpt-image-canvas/shared";
 import { assetPreviewUrl } from "../../shared/api/assets";
 import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
+import { PROVIDER_CONFIG_SAVED_EVENT } from "../../shared/provider-config-events";
 
 const VIDEO_JOB_POLL_INTERVAL_MS = 1600;
 const VIDEO_JOB_POLL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -37,7 +38,7 @@ export interface CreativeVideoPageProps {
   onClearInitialReference?: () => void;
 }
 
-type VideoMode = "text_to_video" | "image_to_video";
+export type VideoMode = "text_to_video" | "image_to_video";
 type VideoProgressFields = {
   progress?: unknown;
   progressPercent?: unknown;
@@ -85,45 +86,60 @@ export function CreativeVideoPage({
   const [providerLoading, setProviderLoading] = useState(true);
   const [providerError, setProviderError] = useState("");
 
+  const loadProviderStatus = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    setProviderLoading(true);
+    setProviderError("");
+
+    try {
+      const response = await fetch(videoProviderStatusUrl(), { signal });
+      if (!response.ok) {
+        throw new Error(await readVideoApiError(response, locale, t, t("videoProviderStatusRequestFailed", { status: response.status })));
+      }
+
+      const body = (await response.json()) as unknown;
+      if (!isVideoProviderStatusResponse(body)) {
+        throw new Error(t("videoProviderStatusInvalidData"));
+      }
+
+      if (!signal?.aborted) {
+        setProviderStatus(body.provider);
+      }
+    } catch (loadError) {
+      if (!signal?.aborted) {
+        setProviderError(loadError instanceof Error ? loadError.message : t("videoProviderStatusLoadFailed"));
+        setProviderStatus(null);
+      }
+    } finally {
+      if (!signal?.aborted) {
+        setProviderLoading(false);
+      }
+    }
+  }, [locale, t]);
+
   useEffect(() => {
     const controller = new AbortController();
 
-    async function loadProviderStatus(): Promise<void> {
-      setProviderLoading(true);
-      setProviderError("");
-
-      try {
-        const response = await fetch("/api/videos/provider-status", { signal: controller.signal });
-        if (!response.ok) {
-          throw new Error(await readVideoApiError(response, locale, t, t("videoProviderStatusRequestFailed", { status: response.status })));
-        }
-
-        const body = (await response.json()) as unknown;
-        if (!isVideoProviderStatusResponse(body)) {
-          throw new Error(t("videoProviderStatusInvalidData"));
-        }
-
-        if (!controller.signal.aborted) {
-          setProviderStatus(body.provider);
-        }
-      } catch (loadError) {
-        if (!controller.signal.aborted) {
-          setProviderError(loadError instanceof Error ? loadError.message : t("videoProviderStatusLoadFailed"));
-          setProviderStatus(null);
-        }
-      } finally {
-        if (!controller.signal.aborted) {
-          setProviderLoading(false);
-        }
-      }
-    }
-
-    void loadProviderStatus();
+    void loadProviderStatus(controller.signal);
 
     return () => {
       controller.abort();
     };
-  }, [locale, t]);
+  }, [loadProviderStatus]);
+
+  useEffect(() => {
+    const refreshProviderStatus = (): void => {
+      void loadProviderStatus();
+    };
+
+    window.addEventListener(PROVIDER_CONFIG_SAVED_EVENT, refreshProviderStatus);
+    return () => {
+      window.removeEventListener(PROVIDER_CONFIG_SAVED_EVENT, refreshProviderStatus);
+    };
+  }, [loadProviderStatus]);
+
+  useEffect(() => {
+    setMode((currentMode) => nextVideoModeForProviderStatus(providerStatus, currentMode));
+  }, [providerStatus]);
 
   useEffect(() => {
     if (initialPrompt) {
@@ -202,11 +218,14 @@ export function CreativeVideoPage({
   );
   const hasExternalReference = Boolean(initialReferenceAssetId && selectedReferenceAssetId === initialReferenceAssetId && !selectedReference);
   const modeSupported = isModeSupported(providerStatus, mode);
+  const textModeSelectable = canSelectVideoMode(providerStatus, "text_to_video");
+  const imageModeSelectable = canSelectVideoMode(providerStatus, "image_to_video");
   const providerReady = Boolean(providerStatus?.configured && modeSupported);
   const providerBlockMessage = providerLoading
     ? t("videoProviderChecking")
     : providerError || providerUnavailableMessage(providerStatus, mode, t);
   const showKeyframeProviderNote = isKeyframeProviderStatus(providerStatus);
+  const heroCopy = creativeVideoHeroCopyKeys(providerStatus);
   const canSubmit =
     prompt.trim().length > 0 &&
     !submitting &&
@@ -317,10 +336,10 @@ export function CreativeVideoPage({
           <div className="video-hero__copy">
             <p className="video-kicker">
               <Sparkles className="size-4" aria-hidden="true" />
-              {t("videoCreativeKicker")}
+              {t(heroCopy.kicker)}
             </p>
-            <h1 id="creative-video-title">{t("videoCreativeTitle")}</h1>
-            <p>{t("videoCreativeDeck")}</p>
+            <h1 id="creative-video-title">{t(heroCopy.title)}</h1>
+            <p>{t(heroCopy.deck)}</p>
           </div>
           <button className="video-library-link" type="button" onClick={onOpenVideoLibrary}>
             <Film className="size-4" aria-hidden="true" />
@@ -340,8 +359,10 @@ export function CreativeVideoPage({
             <div className="video-mode-toggle" role="radiogroup" aria-label={t("videoModeLabel")}>
               <button
                 aria-checked={mode === "text_to_video"}
+                aria-disabled={!textModeSelectable}
                 className="video-mode-card"
                 data-selected={mode === "text_to_video"}
+                disabled={!textModeSelectable}
                 role="radio"
                 type="button"
                 onClick={() => setMode("text_to_video")}
@@ -354,8 +375,10 @@ export function CreativeVideoPage({
               </button>
               <button
                 aria-checked={mode === "image_to_video"}
+                aria-disabled={!imageModeSelectable}
                 className="video-mode-card"
                 data-selected={mode === "image_to_video"}
+                disabled={!imageModeSelectable}
                 role="radio"
                 type="button"
                 onClick={() => setMode("image_to_video")}
@@ -438,7 +461,7 @@ export function CreativeVideoPage({
               </fieldset>
             </div>
 
-            {mode === "image_to_video" ? (
+            {shouldShowReferencePicker(providerStatus, mode) ? (
               <section className="video-reference-panel" aria-labelledby="video-reference-title">
                 <div className="video-section-heading">
                   <h2 id="video-reference-title">{t("videoReferenceTitle")}</h2>
@@ -795,6 +818,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+export function nextVideoModeForProviderStatus(provider: VideoProviderStatus | null, currentMode: VideoMode): VideoMode {
+  if (!provider || isModeSupported(provider, currentMode)) {
+    return currentMode;
+  }
+
+  if (provider.supportsTextToVideo) {
+    return "text_to_video";
+  }
+
+  if (provider.supportsImageToVideo) {
+    return "image_to_video";
+  }
+
+  return currentMode;
+}
+
+export function canSelectVideoMode(provider: VideoProviderStatus | null, mode: VideoMode): boolean {
+  return !provider || isModeSupported(provider, mode);
+}
+
+export function shouldShowReferencePicker(provider: VideoProviderStatus | null, mode: VideoMode): boolean {
+  return mode === "image_to_video" && canSelectVideoMode(provider, "image_to_video");
+}
+
+type CreativeVideoHeroCopyKeys = {
+  deck: "videoCreativeDeck" | "videoGrokImagineDeck";
+  kicker: "videoCreativeKicker" | "videoGrokImagineKicker";
+  title: "videoCreativeTitle" | "videoGrokImagineTitle";
+};
+
+export function creativeVideoHeroCopyKeys(provider: VideoProviderStatus | null): CreativeVideoHeroCopyKeys {
+  return provider?.id === "grok-imagine"
+    ? {
+        deck: "videoGrokImagineDeck",
+        kicker: "videoGrokImagineKicker",
+        title: "videoGrokImagineTitle"
+      }
+    : {
+        deck: "videoCreativeDeck",
+        kicker: "videoCreativeKicker",
+        title: "videoCreativeTitle"
+      };
+}
+
 function isModeSupported(provider: VideoProviderStatus | null, mode: VideoMode): boolean {
   if (!provider) {
     return false;
@@ -821,6 +888,10 @@ function providerUnavailableMessage(provider: VideoProviderStatus | null, mode: 
   }
 
   return "";
+}
+
+export function videoProviderStatusUrl(): string {
+  return "/api/videos/provider-status";
 }
 
 function capabilityState(supported: boolean | undefined, t: Translate): string {

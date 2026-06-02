@@ -2,7 +2,7 @@
 
 Generated documentation for the SQLite schema defined in `apps/api/src/infrastructure/schema.ts`.
 
-Last reviewed: 2026-05-22.
+Last reviewed: 2026-06-01.
 
 ## `projects`
 
@@ -58,7 +58,7 @@ Stores optional Tencent Cloud COS backup configuration.
 
 ## `provider_configs`
 
-Stores image provider source order, local OpenAI-compatible settings, and local video provider settings.
+Stores image provider source order, local OpenAI-compatible settings, and the currently selected video provider kind. Legacy `video_*` columns are retained as migration input for `video_provider_configs`.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -71,6 +71,7 @@ Stores image provider source order, local OpenAI-compatible settings, and local 
 | `video_kind` | text | Optional video provider kind. |
 | `video_api_key` | text | Optional video provider API key. |
 | `video_base_url` | text | Optional video provider base URL. |
+| `video_model` | text | Optional video provider model. |
 | `video_text_to_video_url` | text | Optional text-to-video endpoint URL. |
 | `video_image_to_video_url` | text | Optional image-to-video endpoint URL. |
 | `video_status_url` | text | Optional video job polling URL template. |
@@ -81,6 +82,29 @@ Stores image provider source order, local OpenAI-compatible settings, and local 
 | `video_height` | integer | Optional generated video height. |
 | `video_fps` | integer | Optional generated video frame rate. |
 | `video_interpolation` | text | Optional local keyframe video interpolation mode. |
+| `created_at` | text | Required ISO timestamp. |
+| `updated_at` | text | Required ISO timestamp. |
+
+## `video_provider_configs`
+
+Stores independent local settings for each video provider kind.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `kind` | text | Primary key video provider kind. |
+| `api_key` | text | Optional video provider API key. |
+| `base_url` | text | Optional video provider base URL. |
+| `video_model` | text | Optional video provider model. |
+| `text_to_video_url` | text | Optional text-to-video endpoint URL. |
+| `image_to_video_url` | text | Optional image-to-video endpoint URL. |
+| `status_url` | text | Optional video job polling URL template. |
+| `timeout_ms` | integer | Optional video provider timeout in milliseconds. |
+| `poll_interval_ms` | integer | Optional video job polling interval in milliseconds. |
+| `ffmpeg_path` | text | Optional FFmpeg executable path for local keyframe video. |
+| `width` | integer | Optional generated video width. |
+| `height` | integer | Optional generated video height. |
+| `fps` | integer | Optional generated video frame rate. |
+| `interpolation` | text | Optional local keyframe video interpolation mode. |
 | `created_at` | text | Required ISO timestamp. |
 | `updated_at` | text | Required ISO timestamp. |
 
@@ -196,6 +220,7 @@ Stores individual video output status and asset linkage for a video generation.
 | `generation_id` | text | Required reference to `video_generation_records.id`; cascades on delete. |
 | `status` | text | Required output status. |
 | `asset_id` | text | Optional reference to `assets.id`. |
+| `provider_job_id` | text | Optional upstream provider task or job ID for debugging. |
 | `error` | text | Optional output error. |
 | `created_at` | text | Required ISO timestamp. |
 

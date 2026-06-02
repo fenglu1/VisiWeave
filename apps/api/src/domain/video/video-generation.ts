@@ -12,6 +12,7 @@ import type {
   VideoGenerationProgressStage,
   VideoGenerationStatus,
   VideoLibraryResponse,
+  VideoProviderKind,
   VideoProviderStatusResponse
 } from "../contracts.js";
 import { db } from "../../infrastructure/database.js";
@@ -29,10 +30,13 @@ import { readStoredAsset } from "../generation/image-generation.js";
 
 const localAssetStorage = new LocalAssetStorageAdapter();
 const PROTECTED_DELETE_STATUSES = new Set<VideoGenerationStatus>(["queued", "running"]);
+const STALE_IN_PROGRESS_DELETE_AFTER_MS = 60 * 60 * 1000;
 
-export function getVideoProviderStatusResponse(): VideoProviderStatusResponse {
+export function getVideoProviderStatusResponse(options: { providerKind?: VideoProviderKind } = {}): VideoProviderStatusResponse {
   return {
-    provider: getVideoProviderStatus()
+    provider: getVideoProviderStatus({
+      providerKind: options.providerKind
+    })
   };
 }
 
@@ -73,6 +77,7 @@ export async function runVideoGeneration(
       generationId,
       status: "queued",
       assetId: null,
+      providerJobId: null,
       error: null,
       createdAt
     })
@@ -171,16 +176,21 @@ async function processVideoGeneration({
         size,
         referenceAsset,
         onProgress: (progress) => {
-          updateVideoProgress(generationId, providerProgressToRecordProgress(progress));
+          updateVideoProgress(generationId, providerProgressToRecordProgress(progress), outputId);
+          rememberProviderJobId(outputId, progress.providerJobId);
         }
       }
     );
+    rememberProviderJobId(outputId, providerOutput.providerJobId);
+    if (!canUpdateVideoGeneration(generationId, outputId)) {
+      return;
+    }
     updateVideoProgress(generationId, {
       status: "running",
       progressPercent: 95,
       progressStage: "saving",
       progressMessage: "Saving generated video."
-    });
+    }, outputId);
     const savedAsset = await saveProviderVideoAsset({
       bytes: providerOutput.bytes,
       mimeType: providerOutput.mimeType,
@@ -189,6 +199,10 @@ async function processVideoGeneration({
       size: providerOutput.size ?? size,
       createdAt
     });
+    if (!canUpdateVideoGeneration(generationId, outputId)) {
+      await deleteSavedVideoAsset(savedAsset.id);
+      return;
+    }
     const completedAt = new Date().toISOString();
 
     db.update(videoGenerationRecords)
@@ -207,11 +221,17 @@ async function processVideoGeneration({
     updateVideoOutput(outputId, {
       status: "succeeded",
       assetId: savedAsset.id,
+      providerJobId: sanitizedProviderJobId(providerOutput.providerJobId),
       error: null
     });
+    if (!isVideoOutputLinkedToAsset(outputId, savedAsset.id)) {
+      await deleteSavedVideoAsset(savedAsset.id);
+    }
   } catch (error) {
+    if (!canUpdateVideoGeneration(generationId, outputId)) {
+      return;
+    }
     const failedAt = new Date().toISOString();
-    const message = sanitizeVideoErrorMessage(errorToMessage(error));
     const current = db
       .select({
         progressPercent: videoGenerationRecords.progressPercent,
@@ -221,6 +241,7 @@ async function processVideoGeneration({
       .from(videoGenerationRecords)
       .where(eq(videoGenerationRecords.id, generationId))
       .get();
+    const message = videoGenerationFailureMessage(error, outputId, current?.progressStage);
 
     db.update(videoGenerationRecords)
       .set({
@@ -266,6 +287,7 @@ export function getVideoJob(jobId: string): VideoGenerationJobResponse | undefin
         id: output.id,
         status: output.status as VideoGenerationStatus,
         asset: asset ? toVideoAsset(asset, record.durationSeconds) : undefined,
+        providerJobId: output.providerJobId ?? undefined,
         error: output.error ? sanitizeVideoErrorMessage(output.error) : undefined,
         createdAt: output.createdAt
       }))
@@ -306,6 +328,7 @@ export function getVideoLibrary(): VideoLibraryResponse {
       progressMessage: generation.progressMessage ?? undefined,
       error: output.error ? sanitizeVideoErrorMessage(output.error) : generation.error ? sanitizeVideoErrorMessage(generation.error) : undefined,
       referenceAssetId: generation.referenceAssetId ?? undefined,
+      providerJobId: output.providerJobId ?? undefined,
       createdAt: output.createdAt,
       asset: asset ? toVideoAsset(asset, generation.durationSeconds) : undefined
     }))
@@ -363,7 +386,8 @@ async function deleteVideoOutputById(outputId: string): Promise<"deleted" | "not
 
   const outputStatus = existing.output.status as VideoGenerationStatus;
   const generationStatus = existing.generation.status as VideoGenerationStatus;
-  if (PROTECTED_DELETE_STATUSES.has(outputStatus) || PROTECTED_DELETE_STATUSES.has(generationStatus)) {
+  const isProtectedInProgress = PROTECTED_DELETE_STATUSES.has(outputStatus) || PROTECTED_DELETE_STATUSES.has(generationStatus);
+  if (isProtectedInProgress && !isStaleInProgressVideoItem(existing.output.createdAt)) {
     return "skipped";
   }
 
@@ -435,8 +459,13 @@ function updateVideoProgress(
     progressPercent: number;
     progressStage: VideoGenerationProgressStage | string;
     progressMessage: string;
-  }
+  },
+  outputId?: string
 ): void {
+  if (outputId && !canUpdateVideoGeneration(generationId, outputId)) {
+    return;
+  }
+
   db.update(videoGenerationRecords)
     .set({
       status: progress.status,
@@ -447,6 +476,36 @@ function updateVideoProgress(
     })
     .where(eq(videoGenerationRecords.id, generationId))
     .run();
+}
+
+function canUpdateVideoGeneration(generationId: string, outputId: string): boolean {
+  const row = db
+    .select({
+      outputStatus: videoGenerationOutputs.status,
+      generationStatus: videoGenerationRecords.status
+    })
+    .from(videoGenerationOutputs)
+    .innerJoin(videoGenerationRecords, eq(videoGenerationOutputs.generationId, videoGenerationRecords.id))
+    .where(and(eq(videoGenerationOutputs.id, outputId), eq(videoGenerationRecords.id, generationId)))
+    .get();
+
+  if (!row) {
+    return false;
+  }
+
+  const outputStatus = row.outputStatus as VideoGenerationStatus;
+  const generationStatus = row.generationStatus as VideoGenerationStatus;
+  return PROTECTED_DELETE_STATUSES.has(outputStatus) && PROTECTED_DELETE_STATUSES.has(generationStatus);
+}
+
+function isVideoOutputLinkedToAsset(outputId: string, assetId: string): boolean {
+  const row = db
+    .select({ id: videoGenerationOutputs.id })
+    .from(videoGenerationOutputs)
+    .where(and(eq(videoGenerationOutputs.id, outputId), eq(videoGenerationOutputs.assetId, assetId)))
+    .get();
+
+  return Boolean(row);
 }
 
 function providerProgressToRecordProgress(progress: VideoProviderProgress): {
@@ -476,11 +535,33 @@ function updateVideoOutput(
   values: {
     status: VideoGenerationStatus;
     assetId?: string | null;
+    providerJobId?: string | null;
     error?: string | null;
   }
 ): void {
+  const nextValues = {
+    ...values
+  };
+  if (values.providerJobId !== undefined) {
+    nextValues.providerJobId = sanitizedProviderJobId(values.providerJobId);
+  }
+
   db.update(videoGenerationOutputs)
-    .set(values)
+    .set(nextValues)
+    .where(eq(videoGenerationOutputs.id, outputId))
+    .run();
+}
+
+function rememberProviderJobId(outputId: string, providerJobId: string | undefined): void {
+  const sanitized = sanitizedProviderJobId(providerJobId);
+  if (!sanitized) {
+    return;
+  }
+
+  db.update(videoGenerationOutputs)
+    .set({
+      providerJobId: sanitized
+    })
     .where(eq(videoGenerationOutputs.id, outputId))
     .run();
 }
@@ -606,6 +687,16 @@ async function deleteLocalAsset(asset: typeof assets.$inferSelect): Promise<void
   await localAssetStorage.deleteObject({ filePath });
 }
 
+async function deleteSavedVideoAsset(assetId: string): Promise<void> {
+  const asset = db.select().from(assets).where(eq(assets.id, assetId)).get();
+  if (!asset) {
+    return;
+  }
+
+  await deleteLocalAsset(asset);
+  db.delete(assets).where(eq(assets.id, assetId)).run();
+}
+
 function errorToMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -614,7 +705,61 @@ function errorToMessage(error: unknown): string {
   return "Video generation failed.";
 }
 
+function videoGenerationFailureMessage(error: unknown, outputId: string, progressStage: string | undefined): string {
+  const baseMessage = sanitizeVideoErrorMessage(errorToMessage(error));
+  const providerJobId = db
+    .select({
+      providerJobId: videoGenerationOutputs.providerJobId
+    })
+    .from(videoGenerationOutputs)
+    .where(eq(videoGenerationOutputs.id, outputId))
+    .get()?.providerJobId ?? undefined;
+  const safeProviderJobId = sanitizedProviderJobIdValue(providerJobId);
+
+  if (isLikelyVideoDownloadFailure(baseMessage, progressStage)) {
+    const taskContext = safeProviderJobId ? ` Remote provider task id: ${safeProviderJobId}.` : "";
+    return sanitizeVideoErrorMessage(
+      `The provider reported a completed video, but this server could not download the video file.${taskContext} ${baseMessage} Configure VIDEO_PROVIDER_DOWNLOAD_PROXY_URL if the provider CDN is unreachable from this machine.`
+    );
+  }
+
+  if (safeProviderJobId && !baseMessage.includes(safeProviderJobId)) {
+    return sanitizeVideoErrorMessage(`${baseMessage} Remote provider task id: ${safeProviderJobId}.`);
+  }
+
+  return baseMessage;
+}
+
+function isLikelyVideoDownloadFailure(message: string, progressStage: string | undefined): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    progressStage === "saving" ||
+    normalized.includes("download") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("provider cdn") ||
+    normalized.includes("video url")
+  );
+}
+
+function sanitizedProviderJobId(value: string | null | undefined): string | null {
+  return sanitizedProviderJobIdValue(value) ?? null;
+}
+
+function sanitizedProviderJobIdValue(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return trimmed.replace(/[\r\n\t]/gu, " ").slice(0, 256);
+}
+
 function isInsideDirectory(filePath: string, directory: string): boolean {
   const localPath = relative(directory, filePath);
   return Boolean(localPath) && !localPath.startsWith("..") && !isAbsolute(localPath);
+}
+
+function isStaleInProgressVideoItem(createdAt: string, nowMs = Date.now()): boolean {
+  const createdMs = Date.parse(createdAt);
+  return Number.isFinite(createdMs) && nowMs - createdMs >= STALE_IN_PROGRESS_DELETE_AFTER_MS;
 }

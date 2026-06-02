@@ -161,36 +161,55 @@ pnpm --filter @gpt-image-canvas/api rebuild better-sqlite3 --stream
 
 Docker Compose 会把共享契约、Web 应用和 API 构建到同一个镜像中。API 在同一个本地端口同时提供 `/api` 和构建后的 Web bundle。SQLite 数据和生成资产会持久化到宿主机 `./data`。
 
+推荐使用仓库内置启动脚本，它会自动创建本机 `.env`，先执行不会展开密钥的 Compose 配置校验，再启动容器：
+
 Windows PowerShell：
 
 ```powershell
-Copy-Item .env.example .env
-docker compose config --quiet --no-env-resolution
-docker compose up --build
+.\scripts\docker-start.ps1
 ```
 
 macOS/Linux：
 
 ```sh
-cp .env.example .env
+sh scripts/docker-start.sh
+```
+
+后台运行：
+
+```powershell
+.\scripts\docker-start.ps1 -Detached
+```
+
+```sh
+sh scripts/docker-start.sh --detached
+```
+
+如需手动执行，命令等价于：
+
+```sh
 docker compose config --quiet --no-env-resolution
 docker compose up --build
 ```
 
-默认打开 [http://localhost:8787](http://localhost:8787)。如需使用其他本地端口，请在启动 Compose 前设置 `.env` 中的 `PORT`。
+默认打开 [http://localhost:8787](http://localhost:8787)。如需使用其他本地端口，请在启动 Compose 前设置 `.env` 中的 `PORT`，例如 `PORT=8788`。
 
 真实凭证存在时，请使用 `docker compose config --quiet --no-env-resolution` 做校验。普通 `docker compose config` 会展开 env 文件，可能打印密钥。
 
 Compose 默认设置 `SQLITE_JOURNAL_MODE=DELETE` 和 `SQLITE_LOCKING_MODE=EXCLUSIVE`，用于避开 Docker Desktop 绑定挂载目录时常见的 SQLite shared-memory 错误。不要让 `pnpm dev` 和 Docker 同时使用同一个 `data/` 目录。
 
-Compose 构建支持这些网络相关 build args：
+Compose 构建支持这些网络相关 build args，但默认不写死第三方镜像源。需要内网镜像或代理时，在 `.env` 或命令行中显式设置：
 
 - `NODE_IMAGE`
 - `NPM_CONFIG_REGISTRY`
 - `APT_MIRROR`
 - `APT_SECURITY_MIRROR`
 
-默认 `NODE_IMAGE` 是 `node:24.15.0-bookworm-slim`。
+默认 `NODE_IMAGE` 是 `node:24.15.0-bookworm-slim`。示例：
+
+```sh
+NPM_CONFIG_REGISTRY=https://registry.example.com docker compose build
+```
 
 ## 本地数据与密钥
 

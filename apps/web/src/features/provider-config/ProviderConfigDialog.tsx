@@ -21,6 +21,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useState, type PointerEvent, type ReactNode } from "react";
 import {
   PROVIDER_SOURCE_IDS,
+  VIDEO_PROVIDER_KINDS,
   type AgentLlmConfigView,
   type AuthStatusResponse,
   type ProviderConfigResponse,
@@ -28,9 +29,12 @@ import {
   type ProviderSourceView,
   type SaveAgentLlmConfigRequest,
   type SaveProviderConfigRequest,
+  type SaveVideoProviderConfig,
+  type VideoProviderConfigView,
   type VideoProviderKind
 } from "@gpt-image-canvas/shared";
 import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
+import { PROVIDER_CONFIG_SAVED_EVENT } from "../../shared/provider-config-events";
 
 interface ProviderConfigDialogProps {
   isAuthLoading: boolean;
@@ -61,6 +65,7 @@ interface VideoProviderFormState {
   kind: VideoProviderKind;
   apiKey: string;
   baseUrl: string;
+  videoModel: string;
   textToVideoUrl: string;
   imageToVideoUrl: string;
   statusUrl: string;
@@ -75,6 +80,9 @@ interface VideoProviderFormState {
 
 type DialogMessageTone = "success" | "error";
 type ProviderConfigTab = "image" | "video" | "agent";
+type VideoProviderFormMap = Record<VideoProviderKind, VideoProviderFormState>;
+
+const GROK_IMAGINE_VIDEO_MODEL = "grok-imagine-video";
 
 interface DialogMessage {
   tone: DialogMessageTone;
@@ -100,6 +108,7 @@ const emptyVideoProviderForm: VideoProviderFormState = {
   kind: "keyframe-image",
   apiKey: "",
   baseUrl: "",
+  videoModel: "",
   textToVideoUrl: "",
   imageToVideoUrl: "",
   statusUrl: "",
@@ -110,6 +119,16 @@ const emptyVideoProviderForm: VideoProviderFormState = {
   height: "2160",
   fps: "24",
   interpolation: "ffmpeg"
+};
+
+const emptyVideoProviderForms: VideoProviderFormMap = {
+  "keyframe-image": { ...emptyVideoProviderForm, kind: "keyframe-image" },
+  "custom-http": { ...emptyVideoProviderForm, kind: "custom-http" },
+  "grok-imagine": {
+    ...emptyVideoProviderForm,
+    kind: "grok-imagine",
+    videoModel: GROK_IMAGINE_VIDEO_MODEL
+  }
 };
 
 export function ProviderConfigDialog({
@@ -127,7 +146,8 @@ export function ProviderConfigDialog({
   const [sourceOrder, setSourceOrder] = useState<ProviderSourceId[]>([...PROVIDER_SOURCE_IDS]);
   const [localForm, setLocalForm] = useState<LocalProviderFormState>(emptyLocalProviderForm);
   const [agentForm, setAgentForm] = useState<AgentLlmFormState>(emptyAgentLlmForm);
-  const [videoForm, setVideoForm] = useState<VideoProviderFormState>(emptyVideoProviderForm);
+  const [selectedVideoKind, setSelectedVideoKind] = useState<VideoProviderKind>("keyframe-image");
+  const [videoForms, setVideoForms] = useState<VideoProviderFormMap>(emptyVideoProviderForms);
   const [isLoading, setIsLoading] = useState(true);
   const [isAgentConfigLoading, setIsAgentConfigLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -142,8 +162,11 @@ export function ProviderConfigDialog({
   const activeSourceId = config?.activeSource?.id;
   const localApiKeyMask = config?.localOpenAI.apiKey.value;
   const hasSavedLocalKey = Boolean(config?.localOpenAI.apiKey.hasSecret);
-  const videoApiKeyMask = config?.video.apiKey.value;
-  const hasSavedVideoKey = Boolean(config?.video.apiKey.hasSecret);
+  const videoForm = videoForms[selectedVideoKind];
+  const selectedVideoConfig = config?.videoConfigs[selectedVideoKind];
+  const videoApiKeyMask = selectedVideoConfig?.apiKey.value;
+  const hasSavedVideoKey = Boolean(selectedVideoConfig?.apiKey.hasSecret);
+  const savedVideoKind = config?.video.kind;
   const agentApiKeyMask = agentConfig?.apiKey.value;
   const hasSavedAgentKey = Boolean(agentConfig?.apiKey.hasSecret);
   const codexSource = sourcesById.get("codex");
@@ -260,21 +283,8 @@ export function ProviderConfigDialog({
       model: nextConfig.localOpenAI.model,
       timeoutMs: String(nextConfig.localOpenAI.timeoutMs)
     });
-    setVideoForm({
-      kind: nextConfig.video.kind,
-      apiKey: "",
-      baseUrl: nextConfig.video.baseUrl,
-      textToVideoUrl: nextConfig.video.textToVideoUrl,
-      imageToVideoUrl: nextConfig.video.imageToVideoUrl,
-      statusUrl: nextConfig.video.statusUrl,
-      timeoutMs: String(nextConfig.video.timeoutMs),
-      pollIntervalMs: String(nextConfig.video.pollIntervalMs),
-      ffmpegPath: nextConfig.video.ffmpegPath,
-      width: String(nextConfig.video.width),
-      height: String(nextConfig.video.height),
-      fps: String(nextConfig.video.fps),
-      interpolation: nextConfig.video.interpolation
-    });
+    setSelectedVideoKind(nextConfig.video.kind);
+    setVideoForms(videoFormsFromConfig(nextConfig));
   }
 
   function applyAgentConfig(nextConfig: AgentLlmConfigView): void {
@@ -305,9 +315,21 @@ export function ProviderConfigDialog({
   }
 
   function updateVideoForm(patch: Partial<VideoProviderFormState>): void {
-    setVideoForm((current) => ({
+    setVideoForms((current) => ({
       ...current,
-      ...patch
+      [selectedVideoKind]: {
+        ...current[selectedVideoKind],
+        ...patch
+      }
+    }));
+    setMessage(null);
+  }
+
+  function updateVideoKind(kind: VideoProviderKind): void {
+    setSelectedVideoKind(kind);
+    setVideoForms((current) => ({
+      ...current,
+      [kind]: ensureVideoProviderDefaults(current[kind], kind)
     }));
     setMessage(null);
   }
@@ -408,23 +430,8 @@ export function ProviderConfigDialog({
       return;
     }
 
-    const videoTimeoutMs = Number.parseInt(videoForm.timeoutMs, 10);
-    const videoPollIntervalMs = Number.parseInt(videoForm.pollIntervalMs, 10);
-    const videoWidth = Number.parseInt(videoForm.width, 10);
-    const videoHeight = Number.parseInt(videoForm.height, 10);
-    const videoFps = Number.parseInt(videoForm.fps, 10);
-    if (
-      !Number.isInteger(videoTimeoutMs) ||
-      videoTimeoutMs <= 0 ||
-      !Number.isInteger(videoPollIntervalMs) ||
-      videoPollIntervalMs <= 0 ||
-      !Number.isInteger(videoWidth) ||
-      videoWidth <= 0 ||
-      !Number.isInteger(videoHeight) ||
-      videoHeight <= 0 ||
-      !Number.isInteger(videoFps) ||
-      videoFps <= 0
-    ) {
+    const videoPayload = buildVideoProviderPayload(videoForm, selectedVideoConfig);
+    if (!videoPayload) {
       setMessage({
         tone: "error",
         text: t("providerVideoNumberInvalid")
@@ -462,7 +469,6 @@ export function ProviderConfigDialog({
     setMessage(null);
 
     const apiKey = localForm.apiKey.trim();
-    const videoApiKey = videoForm.apiKey.trim();
     const body: SaveProviderConfigRequest = {
       sourceOrder,
       localOpenAI: {
@@ -472,22 +478,7 @@ export function ProviderConfigDialog({
         model: localForm.model.trim(),
         timeoutMs
       },
-      video: {
-        kind: videoForm.kind,
-        apiKey: videoApiKey,
-        preserveApiKey: !videoApiKey && hasSavedVideoKey,
-        baseUrl: videoForm.baseUrl.trim(),
-        textToVideoUrl: videoForm.textToVideoUrl.trim(),
-        imageToVideoUrl: videoForm.imageToVideoUrl.trim(),
-        statusUrl: videoForm.statusUrl.trim(),
-        timeoutMs: videoTimeoutMs,
-        pollIntervalMs: videoPollIntervalMs,
-        ffmpegPath: videoForm.ffmpegPath.trim(),
-        width: videoWidth,
-        height: videoHeight,
-        fps: videoFps,
-        interpolation: videoForm.interpolation.trim()
-      }
+      video: videoPayload
     };
     const agentBody: SaveAgentLlmConfigRequest | null = shouldPersistAgentConfig
       ? {
@@ -532,6 +523,7 @@ export function ProviderConfigDialog({
       if (savedAgentConfig) {
         applyAgentConfig(savedAgentConfig);
       }
+      window.dispatchEvent(new Event(PROVIDER_CONFIG_SAVED_EVENT));
       await Promise.all([onRefreshAuthStatus(), onRefreshAgentConfig()]);
       setMessage({
         tone: "success",
@@ -547,6 +539,14 @@ export function ProviderConfigDialog({
     } finally {
       setIsSaving(false);
     }
+  }
+
+  function enableVideoProvider(kind: VideoProviderKind): void {
+    if (isSaving) {
+      return;
+    }
+
+    updateVideoKind(kind);
   }
 
   async function handleLogoutCodex(): Promise<void> {
@@ -895,8 +895,8 @@ export function ProviderConfigDialog({
                     </div>
                   </div>
                   <div className="provider-overview-metrics">
-                    <ProviderMetric label={t("providerFieldAvailability")} value={config?.video.configured ? t("providerAvailable") : t("providerUnavailable")} />
-                    <ProviderMetric label={t("providerVideoSource")} value={config?.video.source === "environment" ? t("providerVideoSourceEnv") : t("providerVideoSourceLocal")} />
+                    <ProviderMetric label={t("providerFieldAvailability")} value={selectedVideoConfig?.configured ? t("providerAvailable") : t("providerUnavailable")} />
+                    <ProviderMetric label={t("providerVideoSource")} value={selectedVideoConfig?.source === "environment" ? t("providerVideoSourceEnv") : t("providerVideoSourceLocal")} />
                     <ProviderMetric label={t("providerVideoResolution")} value={`${videoForm.width}x${videoForm.height}`} />
                   </div>
                 </section>
@@ -913,19 +913,40 @@ export function ProviderConfigDialog({
                     <ProviderAvailabilityBadge available={config?.video.configured ?? false} />
                   </header>
 
+                  <div className="provider-video-kind-grid" aria-label={t("providerVideoKind")} role="list">
+                    {VIDEO_PROVIDER_KINDS.map((kind) => {
+                      const providerConfig = config?.videoConfigs[kind];
+                      const isSelected = selectedVideoKind === kind;
+                      const isSavedActive = savedVideoKind === kind;
+                      return (
+                        <article className="provider-video-kind-card" data-active={isSavedActive} data-selected={isSelected} key={kind} role="listitem">
+                          <button
+                            aria-pressed={isSelected}
+                            className="provider-video-kind-card__select"
+                            data-testid={`provider-video-kind-${kind}`}
+                            type="button"
+                            onClick={() => updateVideoKind(kind)}
+                          >
+                            <span className="provider-video-kind-card__title">{videoKindLabel(kind, t)}</span>
+                            <span className="provider-video-kind-card__meta">
+                              {providerConfig?.configured ? t("providerAvailable") : t("providerUnavailable")}
+                            </span>
+                          </button>
+                          <button
+                            className="provider-video-kind-card__action"
+                            data-testid={`provider-video-enable-${kind}`}
+                            disabled={isSaving || isSavedActive}
+                            type="button"
+                            onClick={() => enableVideoProvider(kind)}
+                          >
+                            {isSavedActive ? t("providerVideoInUse") : t("providerVideoEnable")}
+                          </button>
+                        </article>
+                      );
+                    })}
+                  </div>
+
                   <div className="provider-form-grid">
-                    <label className="provider-field provider-field--span">
-                      <span>{t("providerVideoKind")}</span>
-                      <select
-                        className="provider-field__control"
-                        data-testid="provider-video-kind"
-                        value={videoForm.kind}
-                        onChange={(event) => updateVideoForm({ kind: event.target.value as VideoProviderKind })}
-                      >
-                        <option value="keyframe-image">{t("providerVideoKindKeyframe")}</option>
-                        <option value="custom-http">{t("providerVideoKindCustomHttp")}</option>
-                      </select>
-                    </label>
                     <label className="provider-field provider-field--span">
                       <span>API Key</span>
                       <input
@@ -945,11 +966,24 @@ export function ProviderConfigDialog({
                         className="provider-field__control"
                         data-testid="provider-video-base-url"
                         name="videoProviderBaseUrl"
-                        placeholder={videoForm.kind === "keyframe-image" ? t("providerBaseUrlPlaceholder") : t("providerVideoBaseUrlPlaceholder")}
+                        placeholder={videoForm.kind === "grok-imagine" ? t("providerVideoGrokBaseUrlPlaceholder") : videoForm.kind === "keyframe-image" ? t("providerBaseUrlPlaceholder") : t("providerVideoBaseUrlPlaceholder")}
                         value={videoForm.baseUrl}
                         onChange={(event) => updateVideoForm({ baseUrl: event.target.value })}
                       />
                     </label>
+                    {videoForm.kind === "grok-imagine" ? (
+                      <label className="provider-field provider-field--span">
+                        <span>{t("providerFieldModel")}</span>
+                        <input
+                          className="provider-field__control"
+                          data-testid="provider-video-model"
+                          name="videoProviderModel"
+                          placeholder={GROK_IMAGINE_VIDEO_MODEL}
+                          value={videoForm.videoModel}
+                          onChange={(event) => updateVideoForm({ videoModel: event.target.value })}
+                        />
+                      </label>
+                    ) : null}
                     {videoForm.kind === "custom-http" ? (
                       <>
                         <label className="provider-field provider-field--span">
@@ -975,7 +1009,7 @@ export function ProviderConfigDialog({
                           />
                         </label>
                       </>
-                    ) : (
+                    ) : videoForm.kind === "keyframe-image" ? (
                       <label className="provider-field provider-field--span">
                         <span>FFmpeg</span>
                         <input
@@ -987,7 +1021,7 @@ export function ProviderConfigDialog({
                           onChange={(event) => updateVideoForm({ ffmpegPath: event.target.value })}
                         />
                       </label>
-                    )}
+                    ) : null}
                     <label className="provider-field">
                       <span>{t("providerTimeoutMs")}</span>
                       <input
@@ -1344,7 +1378,101 @@ function providerOverviewCopy(sourceId: ProviderSourceId | undefined, t: Transla
 }
 
 function videoKindLabel(kind: VideoProviderKind, t: Translate): string {
+  if (kind === "grok-imagine") {
+    return t("providerVideoKindGrokImagine");
+  }
+
   return kind === "custom-http" ? t("providerVideoKindCustomHttp") : t("providerVideoKindKeyframe");
+}
+
+function videoFormsFromConfig(config: ProviderConfigResponse): VideoProviderFormMap {
+  return VIDEO_PROVIDER_KINDS.reduce<VideoProviderFormMap>((forms, kind) => {
+    forms[kind] = videoFormFromConfig(config.videoConfigs[kind] ?? config.video, kind);
+    return forms;
+  }, { ...emptyVideoProviderForms });
+}
+
+function videoFormFromConfig(config: VideoProviderConfigView, kind: VideoProviderKind): VideoProviderFormState {
+  return ensureVideoProviderDefaults(
+    {
+      kind,
+      apiKey: "",
+      baseUrl: config.baseUrl,
+      videoModel: config.videoModel,
+      textToVideoUrl: config.textToVideoUrl,
+      imageToVideoUrl: config.imageToVideoUrl,
+      statusUrl: config.statusUrl,
+      timeoutMs: String(config.timeoutMs),
+      pollIntervalMs: String(config.pollIntervalMs),
+      ffmpegPath: config.ffmpegPath,
+      width: String(config.width),
+      height: String(config.height),
+      fps: String(config.fps),
+      interpolation: config.interpolation
+    },
+    kind
+  );
+}
+
+function ensureVideoProviderDefaults(form: VideoProviderFormState, kind: VideoProviderKind): VideoProviderFormState {
+  if (kind !== "grok-imagine") {
+    return {
+      ...form,
+      kind
+    };
+  }
+
+  return {
+    ...form,
+    kind,
+    baseUrl: form.baseUrl,
+    videoModel: form.videoModel.trim() || GROK_IMAGINE_VIDEO_MODEL
+  };
+}
+
+function buildVideoProviderPayload(
+  form: VideoProviderFormState,
+  savedConfig: VideoProviderConfigView | undefined
+): SaveVideoProviderConfig | null {
+  const videoTimeoutMs = Number.parseInt(form.timeoutMs, 10);
+  const videoPollIntervalMs = Number.parseInt(form.pollIntervalMs, 10);
+  const videoWidth = Number.parseInt(form.width, 10);
+  const videoHeight = Number.parseInt(form.height, 10);
+  const videoFps = Number.parseInt(form.fps, 10);
+  if (
+    !Number.isInteger(videoTimeoutMs) ||
+    videoTimeoutMs <= 0 ||
+    !Number.isInteger(videoPollIntervalMs) ||
+    videoPollIntervalMs <= 0 ||
+    !Number.isInteger(videoWidth) ||
+    videoWidth <= 0 ||
+    !Number.isInteger(videoHeight) ||
+    videoHeight <= 0 ||
+    !Number.isInteger(videoFps) ||
+    videoFps <= 0
+  ) {
+    return null;
+  }
+
+  const videoApiKey = form.apiKey.trim();
+  return {
+    kind: form.kind,
+    apiKey: videoApiKey,
+    preserveApiKey: !videoApiKey && Boolean(savedConfig?.apiKey.hasSecret),
+    baseUrl: form.baseUrl.trim(),
+    videoModel: form.videoModel.trim(),
+    model: form.videoModel.trim(),
+    textToVideoUrl: form.textToVideoUrl.trim(),
+    imageToVideoUrl: form.imageToVideoUrl.trim(),
+    statusUrl: form.statusUrl.trim(),
+    timeoutMs: videoTimeoutMs,
+    pollIntervalMs: videoPollIntervalMs,
+    ffmpegPath: form.ffmpegPath.trim(),
+    width: videoWidth,
+    height: videoHeight,
+    fps: videoFps,
+    interpolation: form.interpolation.trim()
+  };
 }
 
 function shouldSaveAgentConfig(form: AgentLlmFormState, hasSavedApiKey: boolean): boolean {

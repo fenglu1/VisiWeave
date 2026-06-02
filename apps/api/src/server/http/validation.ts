@@ -111,6 +111,14 @@ export function parseVideoGeneratePayload(input: unknown): ParseResult<GenerateV
   }
 
   const referenceAssetId = parseOptionalString(input.referenceAssetId);
+  const providerKind = parseVideoProviderKind(input.providerKind);
+  if (Object.hasOwn(input, "providerKind") && !providerKind) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_video_provider", "Unsupported video provider kind.")
+    };
+  }
+
   if (mode.value === "image_to_video") {
     if (!referenceAssetId) {
       return {
@@ -135,7 +143,8 @@ export function parseVideoGeneratePayload(input: unknown): ParseResult<GenerateV
       mode: mode.value,
       durationSeconds: durationSeconds.value,
       aspectRatio: aspectRatio.value,
-      referenceAssetId: mode.value === "image_to_video" ? referenceAssetId : undefined
+      referenceAssetId: mode.value === "image_to_video" ? referenceAssetId : undefined,
+      providerKind
     }
   };
 }
@@ -368,7 +377,7 @@ function parseVideoMode(value: unknown): ParseResult<VideoGenerationMode> {
 }
 
 function parseVideoProviderKind(value: unknown): VideoProviderKind | undefined {
-  return value === "keyframe-image" || value === "custom-http" ? value : undefined;
+  return value === "keyframe-image" || value === "custom-http" || value === "grok-imagine" ? value : undefined;
 }
 
 function parseVideoDuration(value: unknown): ParseResult<VideoDurationPreset> {
@@ -663,13 +672,26 @@ function parseVideoProviderConfig(input: unknown): ParseResult<SaveVideoProvider
     if (!kind) {
       return {
         ok: false,
-        error: errorResponse("invalid_provider_config", "Video provider kind must be keyframe-image or custom-http.")
+        error: errorResponse(
+          "invalid_provider_config",
+          "Video provider kind must be keyframe-image, custom-http, or grok-imagine."
+        )
       };
     }
     config.kind = kind;
   }
 
-  for (const key of ["apiKey", "baseUrl", "textToVideoUrl", "imageToVideoUrl", "statusUrl", "ffmpegPath", "interpolation"] as const) {
+  for (const key of [
+    "apiKey",
+    "baseUrl",
+    "videoModel",
+    "model",
+    "textToVideoUrl",
+    "imageToVideoUrl",
+    "statusUrl",
+    "ffmpegPath",
+    "interpolation"
+  ] as const) {
     if (!Object.hasOwn(input, key)) {
       continue;
     }

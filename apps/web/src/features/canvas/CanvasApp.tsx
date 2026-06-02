@@ -115,11 +115,18 @@ import {
   type SizePreset,
   type StorageConfigResponse,
   type StorageTestResult,
-  type StylePresetId
+  type StylePresetId,
 } from "@gpt-image-canvas/shared";
 import { LOCALES, localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 import { assetDownloadUrl, assetPreviewUrl } from "../../shared/api/assets";
+import { writeClipboardText } from "../../shared/clipboard";
 import { resolveInitialTheme, THEME_STORAGE_KEY, type AppTheme } from "../../shared/theme";
+import {
+  canonicalPathForPathname,
+  pathForRoute,
+  routeFromPathname,
+  type AppRoute
+} from "./app-routing";
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
 const AGENT_SOCKET_PING_INTERVAL_MS = 15_000;
@@ -225,8 +232,8 @@ const defaultStorageConfigForm: StorageConfigFormState = {
   enabled: false,
   secretId: "",
   secretKey: "",
-  bucket: "source-1253253332",
-  region: "ap-nanjing",
+  bucket: "",
+  region: "",
   keyPrefix: "gpt-image-canvas/assets"
 };
 
@@ -329,7 +336,6 @@ function preloadVideoLibraryPage(): void {
 }
 
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
-type AppRoute = "home" | "canvas" | "gallery" | "creative-video" | "video-library";
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
 type PanelTab = "manual" | "agent";
@@ -567,35 +573,16 @@ function imageSizeValidationMessage(reason: ImageSizeValidationReason | undefine
 }
 
 function routeFromLocation(): AppRoute {
-  if (window.location.pathname === "/canvas") {
-    return "canvas";
-  }
-
-  if (window.location.pathname === "/gallery") {
-    return "gallery";
-  }
-
-  if (window.location.pathname === "/creative-video") {
-    return "creative-video";
-  }
-
-  return window.location.pathname === "/video-library" ? "video-library" : "home";
+  return routeFromPathname(window.location.pathname);
 }
 
-function pathForRoute(route: AppRoute): string {
-  if (route === "canvas") {
-    return "/canvas";
+function canonicalizeLocation(): void {
+  const canonicalPath = canonicalPathForPathname(window.location.pathname);
+  if (!canonicalPath) {
+    return;
   }
 
-  if (route === "gallery") {
-    return "/gallery";
-  }
-
-  if (route === "creative-video") {
-    return "/creative-video";
-  }
-
-  return route === "video-library" ? "/video-library" : "/";
+  window.history.replaceState(null, "", `${canonicalPath}${window.location.search}${window.location.hash}`);
 }
 
 function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
@@ -789,31 +776,6 @@ function createTemporaryGenerationRecord(input: {
 function promptExcerpt(promptValue: string): string {
   const compact = promptValue.replace(/\s+/gu, " ").trim();
   return compact.length > 72 ? `${compact.slice(0, 72)}...` : compact;
-}
-
-async function writeClipboardText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textArea = document.createElement("textarea");
-  textArea.value = text;
-  textArea.readOnly = true;
-  textArea.style.position = "fixed";
-  textArea.style.left = "-9999px";
-  textArea.style.top = "0";
-  document.body.append(textArea);
-  textArea.select();
-
-  try {
-    const copied = document.execCommand("copy");
-    if (!copied) {
-      throw new Error("Copy command was not accepted.");
-    }
-  } finally {
-    textArea.remove();
-  }
 }
 
 function formatCreatedTime(value: string, formatDateTime: (value: string) => string): string {
@@ -2268,39 +2230,45 @@ function TopNavigation({
         <div className="top-navigation__actions">
           <nav aria-label={t("navMainAria")} className="top-navigation__links">
             <a
+              aria-label={t("navHome")}
               aria-current={route === "home" ? "page" : undefined}
               className="top-navigation__link"
               data-active={route === "home"}
               data-testid="nav-home"
               href="/"
+              title={t("navHome")}
               onClick={(event) => {
                 event.preventDefault();
                 onNavigate("home");
               }}
             >
               <Sparkles className="size-4" aria-hidden="true" />
-              {t("navHome")}
+              <span className="top-navigation__link-label">{t("navHome")}</span>
             </a>
             <a
+              aria-label={t("navCanvas")}
               aria-current={route === "canvas" ? "page" : undefined}
               className="top-navigation__link"
               data-active={route === "canvas"}
               data-testid="nav-canvas"
               href="/canvas"
+              title={t("navCanvas")}
               onClick={(event) => {
                 event.preventDefault();
                 onNavigate("canvas");
               }}
             >
               <Square className="size-4" aria-hidden="true" />
-              {t("navCanvas")}
+              <span className="top-navigation__link-label">{t("navCanvas")}</span>
             </a>
             <a
+              aria-label={t("navGallery")}
               aria-current={route === "gallery" ? "page" : undefined}
               className="top-navigation__link"
               data-active={route === "gallery"}
               data-testid="nav-gallery"
               href="/gallery"
+              title={t("navGallery")}
               onFocus={onPreloadGallery}
               onMouseEnter={onPreloadGallery}
               onClick={(event) => {
@@ -2309,14 +2277,16 @@ function TopNavigation({
               }}
             >
               <ImageIcon className="size-4" aria-hidden="true" />
-              {t("navGallery")}
+              <span className="top-navigation__link-label">{t("navGallery")}</span>
             </a>
             <a
+              aria-label={t("navCreativeVideo")}
               aria-current={route === "creative-video" ? "page" : undefined}
               className="top-navigation__link"
               data-active={route === "creative-video"}
               data-testid="nav-creative-video"
               href="/creative-video"
+              title={t("navCreativeVideo")}
               onFocus={onPreloadCreativeVideo}
               onMouseEnter={onPreloadCreativeVideo}
               onClick={(event) => {
@@ -2325,14 +2295,16 @@ function TopNavigation({
               }}
             >
               <Clapperboard className="size-4" aria-hidden="true" />
-              {t("navCreativeVideo")}
+              <span className="top-navigation__link-label">{t("navCreativeVideo")}</span>
             </a>
             <a
+              aria-label={t("navVideoLibrary")}
               aria-current={route === "video-library" ? "page" : undefined}
               className="top-navigation__link"
               data-active={route === "video-library"}
               data-testid="nav-video-library"
               href="/video-library"
+              title={t("navVideoLibrary")}
               onFocus={onPreloadVideoLibrary}
               onMouseEnter={onPreloadVideoLibrary}
               onClick={(event) => {
@@ -2341,7 +2313,7 @@ function TopNavigation({
               }}
             >
               <Library className="size-4" aria-hidden="true" />
-              {t("navVideoLibrary")}
+              <span className="top-navigation__link-label">{t("navVideoLibrary")}</span>
             </a>
           </nav>
           <LanguageSwitcher />
@@ -2887,9 +2859,11 @@ export function App() {
 
   useEffect(() => {
     const updateRoute = (): void => {
+      canonicalizeLocation();
       setRoute(routeFromLocation());
     };
 
+    updateRoute();
     window.addEventListener("popstate", updateRoute);
     return () => {
       window.removeEventListener("popstate", updateRoute);

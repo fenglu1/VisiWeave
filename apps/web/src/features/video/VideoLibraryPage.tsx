@@ -19,9 +19,11 @@ import {
   type VideoLibraryResponse
 } from "@gpt-image-canvas/shared";
 import { assetDownloadUrl } from "../../shared/api/assets";
+import { writeClipboardText } from "../../shared/clipboard";
 import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 
 const VIDEO_LIBRARY_REFRESH_INTERVAL_MS = 2000;
+export const STALE_IN_PROGRESS_DELETE_AFTER_MS = 60 * 60 * 1000;
 
 export interface VideoLibraryPageProps {
   onDeleted?: (outputId: string) => void;
@@ -159,7 +161,7 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
 
     return items.filter((item) => normalizeSearchText(item.prompt).includes(normalizedQuery));
   }, [items, query]);
-  const deletableOutputIds = useMemo(() => filteredItems.filter(isDeletableVideoItem).map((item) => item.outputId), [filteredItems]);
+  const deletableOutputIds = useMemo(() => filteredItems.filter((item) => canDeleteVideoItem(item, nowMs)).map((item) => item.outputId), [filteredItems, nowMs]);
   const selectedDeletableOutputIds = useMemo(
     () => selectedOutputIds.filter((outputId) => deletableOutputIds.includes(outputId)),
     [deletableOutputIds, selectedOutputIds]
@@ -167,8 +169,8 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
   const allDeletableSelected = deletableOutputIds.length > 0 && selectedDeletableOutputIds.length === deletableOutputIds.length;
 
   useEffect(() => {
-    setSelectedOutputIds((current) => current.filter((outputId) => items.some((item) => item.outputId === outputId && isDeletableVideoItem(item))));
-  }, [items]);
+    setSelectedOutputIds((current) => current.filter((outputId) => items.some((item) => item.outputId === outputId && canDeleteVideoItem(item, nowMs))));
+  }, [items, nowMs]);
 
   function showStatus(message: string): void {
     window.clearTimeout(statusTimerRef.current);
@@ -206,7 +208,7 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
   }
 
   async function deleteItem(item: VideoLibraryItem): Promise<void> {
-    if (!isDeletableVideoItem(item)) {
+    if (!canDeleteVideoItem(item, nowMs)) {
       setError(t("videoDeleteRunningDisabled"));
       return;
     }
@@ -239,7 +241,7 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
   }
 
   function toggleItemSelection(item: VideoLibraryItem): void {
-    if (!isDeletableVideoItem(item)) {
+    if (!canDeleteVideoItem(item, nowMs)) {
       return;
     }
 
@@ -409,7 +411,7 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
                   <input
                     aria-label={t("videoSelectForDelete", { prompt: promptExcerpt(item.prompt) })}
                     checked={selectedOutputIds.includes(item.outputId)}
-                    disabled={!isDeletableVideoItem(item) || batchDeleting}
+                    disabled={!canDeleteVideoItem(item, nowMs) || batchDeleting}
                     type="checkbox"
                     onChange={() => toggleItemSelection(item)}
                   />
@@ -481,8 +483,8 @@ export function VideoLibraryPage({ onDeleted }: VideoLibraryPageProps = {}) {
                         <button
                           aria-label={t("videoDeleteAction", { prompt: promptExcerpt(item.prompt) })}
                           className="video-icon-action video-icon-action--danger"
-                          disabled={deletingOutputId === item.outputId || !isDeletableVideoItem(item)}
-                          title={t("commonRemove")}
+                          disabled={deletingOutputId === item.outputId || !canDeleteVideoItem(item, nowMs)}
+                          title={canDeleteVideoItem(item, nowMs) ? t("commonRemove") : t("videoDeleteRunningDisabled")}
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
@@ -650,7 +652,8 @@ function VideoDetailModal({
           {item.outputId ? (
             <button
               className="video-inline-button video-inline-button--danger"
-              disabled={deletingOutputId === item.outputId || !isDeletableVideoItem(item)}
+              disabled={deletingOutputId === item.outputId || !canDeleteVideoItem(item, nowMs)}
+              title={canDeleteVideoItem(item, nowMs) ? undefined : t("videoDeleteRunningDisabled")}
               type="button"
               onClick={() => onDelete(item)}
             >
@@ -729,8 +732,13 @@ function isActiveVideoItem(item: VideoLibraryItem): boolean {
   return item.status === "queued" || item.status === "running";
 }
 
-function isDeletableVideoItem(item: VideoLibraryItem): boolean {
-  return Boolean(item.outputId) && !isActiveVideoItem(item);
+export function canDeleteVideoItem(item: VideoLibraryItem, nowMs = Date.now()): boolean {
+  return Boolean(item.outputId) && (!isActiveVideoItem(item) || isStaleInProgressVideoItem(item.createdAt, nowMs));
+}
+
+export function isStaleInProgressVideoItem(createdAt: string, nowMs = Date.now()): boolean {
+  const createdMs = timestampMs(createdAt);
+  return nowMs - createdMs >= STALE_IN_PROGRESS_DELETE_AFTER_MS;
 }
 
 function progressDisplayForItem(item: VideoLibraryItem, nowMs: number, t: Translate): VideoProgressDisplay {
@@ -841,29 +849,4 @@ async function readVideoLibraryError(response: Response, locale: Locale, t: Tran
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-async function writeClipboardText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textArea = document.createElement("textarea");
-  textArea.value = text;
-  textArea.readOnly = true;
-  textArea.style.position = "fixed";
-  textArea.style.left = "-9999px";
-  textArea.style.top = "0";
-  document.body.append(textArea);
-  textArea.select();
-
-  try {
-    const copied = document.execCommand("copy");
-    if (!copied) {
-      throw new Error("Copy command was not accepted.");
-    }
-  } finally {
-    textArea.remove();
-  }
 }

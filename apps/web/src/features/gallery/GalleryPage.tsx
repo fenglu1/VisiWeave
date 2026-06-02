@@ -25,8 +25,9 @@ import {
   type GalleryImageItem,
   type GalleryResponse
 } from "@gpt-image-canvas/shared";
-import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 import { assetDownloadUrl, assetPreviewUrl } from "../../shared/api/assets";
+import { writeClipboardText } from "../../shared/clipboard";
+import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 
 interface GalleryPageProps {
   onCreateVideo?: (item: GalleryImageItem) => void;
@@ -805,30 +806,5 @@ async function readGalleryError(response: Response, locale: Locale, t: Translate
     });
   } catch {
     return t("galleryRequestFailed", { status: response.status });
-  }
-}
-
-async function writeClipboardText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textArea = document.createElement("textarea");
-  textArea.value = text;
-  textArea.readOnly = true;
-  textArea.style.position = "fixed";
-  textArea.style.left = "-9999px";
-  textArea.style.top = "0";
-  document.body.append(textArea);
-  textArea.select();
-
-  try {
-    const copied = document.execCommand("copy");
-    if (!copied) {
-      throw new Error("Copy command was not accepted.");
-    }
-  } finally {
-    textArea.remove();
   }
 }

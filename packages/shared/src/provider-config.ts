@@ -1,5 +1,6 @@
 export type RuntimeImageProvider = "openai" | "codex" | "none";
-export type VideoProviderKind = "keyframe-image" | "custom-http";
+export const VIDEO_PROVIDER_KINDS = ["keyframe-image", "custom-http", "grok-imagine"] as const;
+export type VideoProviderKind = (typeof VIDEO_PROVIDER_KINDS)[number];
 
 export const PROVIDER_SOURCE_IDS = ["env-openai", "local-openai", "codex"] as const;
 export type ProviderSourceId = (typeof PROVIDER_SOURCE_IDS)[number];
@@ -57,6 +58,7 @@ export interface VideoProviderConfigView {
   kind: VideoProviderKind;
   apiKey: MaskedSecret;
   baseUrl: string;
+  videoModel: string;
   textToVideoUrl: string;
   imageToVideoUrl: string;
   statusUrl: string;
@@ -73,11 +75,14 @@ export interface VideoProviderConfigView {
   source: "environment" | "local";
 }
 
+export type VideoProviderConfigMap = Record<VideoProviderKind, VideoProviderConfigView>;
+
 export interface ProviderConfigResponse {
   sourceOrder: ProviderSourceId[];
   sources: ProviderSourceView[];
   localOpenAI: LocalOpenAIProviderConfigView;
   video: VideoProviderConfigView;
+  videoConfigs: VideoProviderConfigMap;
   activeSource?: ProviderSourceSummary;
 }
 
@@ -100,6 +105,8 @@ export interface SaveVideoProviderConfig {
   apiKey?: string;
   preserveApiKey?: boolean;
   baseUrl?: string;
+  videoModel?: string;
+  model?: string;
   textToVideoUrl?: string;
   imageToVideoUrl?: string;
   statusUrl?: string;

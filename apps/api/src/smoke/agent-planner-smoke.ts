@@ -376,7 +376,7 @@ function smokeNoVisionReferenceHandling(): void {
 
 function smokeDeepSeekPlannerKwargs(): void {
   const kwargs = agentModelKwargsForConfig({
-    baseUrl: "https://api.deepseek.com",
+    baseUrl: "https://deepseek.example.com",
     model: "deepseek-v4-pro"
   });
 
@@ -386,7 +386,7 @@ function smokeDeepSeekPlannerKwargs(): void {
 
   const maxKwargs = agentModelKwargsForConfig(
     {
-      baseUrl: "https://api.deepseek.com",
+      baseUrl: "https://deepseek.example.com",
       model: "deepseek-v4-pro"
     },
     {
@@ -404,7 +404,7 @@ function smokeDeepSeekPlannerKwargs(): void {
 
   const disabledKwargs = agentModelKwargsForConfig(
     {
-      baseUrl: "https://api.deepseek.com",
+      baseUrl: "https://deepseek.example.com",
       model: "deepseek-v4-pro"
     },
     {

@@ -1,3 +1,5 @@
+import type { VideoProviderKind } from "./provider-config.js";
+
 export type VideoGenerationMode = "text_to_video" | "image_to_video";
 export type VideoGenerationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type VideoGenerationProgressStage =
@@ -23,6 +25,7 @@ export interface GenerateVideoRequest {
   durationSeconds: VideoDurationPreset;
   aspectRatio: VideoAspectRatio;
   referenceAssetId?: string;
+  providerKind?: VideoProviderKind;
 }
 
 export interface VideoAsset {
@@ -39,6 +42,7 @@ export interface VideoGenerationOutput {
   id: string;
   status: VideoGenerationStatus;
   asset?: VideoAsset;
+  providerJobId?: string;
   error?: string;
   createdAt: string;
 }
@@ -101,6 +105,7 @@ export interface VideoLibraryItem {
   progressMessage?: string;
   error?: string;
   referenceAssetId?: string;
+  providerJobId?: string;
   createdAt: string;
   asset?: VideoAsset;
 }

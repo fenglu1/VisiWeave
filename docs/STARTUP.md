@@ -85,6 +85,25 @@ If `ffmpeg` is not on `PATH`, set `FFMPEG_PATH` to the executable path and verif
 
 For paths with spaces, keep the quotes in the PowerShell command. In `.env`, set `FFMPEG_PATH` to the actual local executable path and keep `.env` uncommitted.
 
+## Optional Grok Imagine-Compatible Video Provider
+
+Creative Video can also use a Grok Imagine-compatible video API. Add the local values to `.env` only:
+
+```env
+VIDEO_PROVIDER_KIND=grok-imagine
+VIDEO_PROVIDER_URL=https://video-provider.example.com/v1
+VIDEO_PROVIDER_MODEL=grok-imagine-video
+VIDEO_PROVIDER_API_KEY=
+# Optional, for downloading provider CDN video files through a local HTTP(S) proxy:
+# VIDEO_PROVIDER_DOWNLOAD_PROXY_URL=http://127.0.0.1:7890
+```
+
+Keep `VIDEO_PROVIDER_API_KEY` out of committed files and logs. The local smoke for this path uses a fake upstream by default, so it does not require real Muyuan credentials:
+
+```powershell
+pnpm --filter @gpt-image-canvas/api smoke:grok-imagine-video
+```
+
 ## Normal Startup
 
 If your shell already uses:
