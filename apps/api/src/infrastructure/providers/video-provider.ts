@@ -91,6 +91,7 @@ interface CustomHttpVideoProviderConfig {
   imageToVideoUrl?: string;
   statusUrl?: string;
   apiKey?: string;
+  videoModel: string;
   downloadProxyUrl?: string;
   timeoutMs: number;
   pollIntervalMs: number;
@@ -363,6 +364,7 @@ function createLocalVideoProvider(localConfig: NonNullable<ReturnType<typeof get
     imageToVideoUrl: localConfig.imageToVideoUrl,
     statusUrl: localConfig.statusUrl,
     apiKey: localConfig.apiKey,
+    videoModel: localConfig.videoModel,
     downloadProxyUrl: getVideoProviderDownloadProxyUrl(),
     timeoutMs: localConfig.timeoutMs,
     pollIntervalMs: localConfig.pollIntervalMs
@@ -459,8 +461,8 @@ class CustomHttpVideoProvider implements VideoProvider {
   }
 
   async generate(input: VideoProviderInput, signal?: AbortSignal): Promise<VideoProviderOutput> {
-    const endpointUrl = endpointForMode(this.config, input.mode);
-    if (!endpointUrl) {
+    const baseUrl = endpointForMode(this.config, input.mode);
+    if (!baseUrl) {
       throw new VideoProviderError(
         "unsupported_video_mode",
         `The configured video provider does not support ${input.mode}.`,
@@ -469,19 +471,14 @@ class CustomHttpVideoProvider implements VideoProvider {
     }
 
     const deadline = Date.now() + this.config.timeoutMs;
+    const apiBaseUrl = grok2ApiVideoApiBaseUrl(baseUrl);
+    const createUrl = grok2ApiVideoCreateUrl(apiBaseUrl);
     const response = await fetchWithTimeout(
-      endpointUrl,
+      createUrl,
       {
         method: "POST",
-        headers: requestHeaders(this.config, { includeContentType: true }),
-        body: JSON.stringify({
-          mode: input.mode,
-          prompt: input.prompt,
-          durationSeconds: input.durationSeconds,
-          aspectRatio: input.aspectRatio,
-          size: input.size,
-          referenceAsset: input.referenceAsset
-        }),
+        headers: requestHeaders(this.config, { includeContentType: false }),
+        body: grok2ApiVideoFormData(input, this.config.videoModel),
         signal
       },
       remainingTimeoutMs(deadline)
@@ -495,7 +492,7 @@ class CustomHttpVideoProvider implements VideoProvider {
       );
     }
 
-    return readProviderVideoResponse(response, signal, this.config, deadline, endpointUrl);
+    return readProviderVideoResponse(response, signal, this.config, deadline, apiBaseUrl);
   }
 }
 
@@ -522,18 +519,13 @@ class GrokImagineVideoProvider implements VideoProvider {
     });
 
     const deadline = Date.now() + this.config.timeoutMs;
-    const createUrl = joinProviderPath(this.config.baseUrl, "videos");
+    const endpoint = grokImagineEndpointForBaseUrl(this.config.baseUrl);
     const response = await fetchWithTimeout(
-      createUrl,
+      endpoint.createUrl,
       {
         method: "POST",
         headers: requestHeaders(this.config, { includeContentType: true }),
-        body: JSON.stringify({
-          prompt: input.prompt,
-          model: this.config.videoModel,
-          seconds: String(input.durationSeconds),
-          size: videoSizeString(input.size)
-        }),
+        body: JSON.stringify(grokImagineCreateRequestBody(endpoint.protocol, input, this.config.videoModel)),
         signal
       },
       remainingTimeoutMs(deadline)
@@ -574,7 +566,7 @@ class GrokImagineVideoProvider implements VideoProvider {
 
     return pollGrokImagineVideoTask({
       taskId,
-      statusUrl: joinProviderPath(this.config.baseUrl, `videos/${encodeURIComponent(taskId)}`)
+      statusUrl: grokImagineStatusUrl(endpoint, taskId)
     }, input, signal, this.config, deadline);
   }
 }
@@ -587,6 +579,7 @@ function getCustomHttpVideoProviderConfig(): CustomHttpVideoProviderConfig {
     imageToVideoUrl: normalizedEnvUrl(process.env.VIDEO_PROVIDER_IMAGE_TO_VIDEO_URL),
     statusUrl: normalizedEnvUrlTemplate(process.env.VIDEO_PROVIDER_STATUS_URL),
     apiKey: process.env.VIDEO_PROVIDER_API_KEY?.trim() || undefined,
+    videoModel: process.env.VIDEO_PROVIDER_MODEL?.trim() || GROK_IMAGINE_DEFAULT_VIDEO_MODEL,
     downloadProxyUrl: getVideoProviderDownloadProxyUrl(),
     timeoutMs: parsePositiveInteger(process.env.VIDEO_PROVIDER_TIMEOUT_MS, DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS),
     pollIntervalMs: parsePositiveInteger(process.env.VIDEO_PROVIDER_POLL_INTERVAL_MS, DEFAULT_VIDEO_PROVIDER_POLL_INTERVAL_MS)
@@ -655,6 +648,74 @@ function endpointForMode(config: CustomHttpVideoProviderConfig, mode: VideoGener
   }
 
   return config.textToVideoUrl ?? config.endpointUrl;
+}
+
+function grok2ApiVideoApiBaseUrl(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    const normalizedPath = url.pathname.replace(/\/+$/u, "");
+    if (/\/v1\/videos$/iu.test(normalizedPath)) {
+      url.pathname = normalizedPath.replace(/\/videos$/iu, "");
+      return url.toString();
+    }
+    if (normalizedPath.split("/").includes("v1")) {
+      url.pathname = normalizedPath || "/";
+      return url.toString();
+    }
+    url.pathname = `${normalizedPath}/v1`;
+    return url.toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
+function grok2ApiVideoCreateUrl(apiBaseUrl: string): string {
+  return joinProviderPath(apiBaseUrl, "videos");
+}
+
+function grok2ApiVideoStatusUrl(apiBaseUrl: string, providerJobId: string): string {
+  return joinProviderPath(apiBaseUrl, `videos/${encodeURIComponent(providerJobId)}`);
+}
+
+function grok2ApiVideoContentUrl(apiBaseUrl: string, providerJobId: string): string {
+  return joinProviderPath(apiBaseUrl, `videos/${encodeURIComponent(providerJobId)}/content`);
+}
+
+function grok2ApiVideoFormData(input: VideoProviderInput, videoModel: string): FormData {
+  const form = new FormData();
+  form.append("model", videoModel);
+  form.append("prompt", input.prompt);
+  form.append("seconds", String(input.durationSeconds));
+  form.append("size", videoSizeString(input.size));
+  form.append("resolution_name", "720p");
+  form.append("preset", "custom");
+
+  if (input.referenceAsset) {
+    const file = videoReferenceAssetFile(input.referenceAsset);
+    form.append("input_reference[]", file.blob, file.fileName);
+  }
+
+  return form;
+}
+
+function videoReferenceAssetFile(referenceAsset: VideoProviderReferenceAsset): { blob: Blob; fileName: string } {
+  const match = /^data:([^;,]+);base64,(.+)$/u.exec(referenceAsset.dataUrl);
+  const mimeType = match?.[1] || referenceAsset.mimeType;
+  const bytes = Buffer.from(match?.[2] ?? "", "base64");
+  return {
+    blob: new Blob([bytes], { type: mimeType }),
+    fileName: sanitizeVideoReferenceFileName(referenceAsset.fileName, mimeType)
+  };
+}
+
+function sanitizeVideoReferenceFileName(fileName: string, mimeType: string): string {
+  const sanitized = fileName.replace(/[^\w.-]+/gu, "_").replace(/^_+|_+$/gu, "");
+  if (sanitized) {
+    return sanitized;
+  }
+
+  const extension = mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1] || "png";
+  return `reference.${extension}`;
 }
 
 function requestHeaders(
@@ -775,6 +836,10 @@ async function providerOutputFromPayload(
   baseUrl: string
 ): Promise<VideoProviderOutput | undefined> {
   const videoPayload = isRecord(payload.video) ? payload.video : undefined;
+  const outputPayload = isRecord(payload.output) ? payload.output : undefined;
+  const resultPayload = isRecord(payload.result) ? payload.result : undefined;
+  const firstOutputVideoPayload = firstRecordFromArray(outputPayload?.videos);
+  const firstResultVideoPayload = firstRecordFromArray(resultPayload?.videos);
   const mimeType = stringValue(payload.mimeType) ?? stringValue(payload.contentType) ?? stringValue(videoPayload?.mimeType) ?? stringValue(videoPayload?.contentType);
   const fileName = stringValue(payload.fileName) ?? stringValue(payload.filename) ?? stringValue(videoPayload?.fileName) ?? stringValue(videoPayload?.filename);
   const providerJobId =
@@ -808,7 +873,19 @@ async function providerOutputFromPayload(
     stringValue(videoPayload?.videoUrl) ??
     stringValue(videoPayload?.video_url) ??
     stringValue(videoPayload?.downloadUrl) ??
-    stringValue(videoPayload?.download_url);
+    stringValue(videoPayload?.download_url) ??
+    stringFromValue(firstArrayItem(outputPayload?.video_urls)) ??
+    stringFromValue(firstArrayItem(outputPayload?.videoUrls)) ??
+    stringFromValue(firstArrayItem(resultPayload?.video_urls)) ??
+    stringFromValue(firstArrayItem(resultPayload?.videoUrls)) ??
+    stringFromValue(firstArrayItem(firstOutputVideoPayload?.url)) ??
+    stringValue(firstOutputVideoPayload?.url) ??
+    stringValue(firstOutputVideoPayload?.videoUrl) ??
+    stringValue(firstOutputVideoPayload?.video_url) ??
+    stringFromValue(firstArrayItem(firstResultVideoPayload?.url)) ??
+    stringValue(firstResultVideoPayload?.url) ??
+    stringValue(firstResultVideoPayload?.videoUrl) ??
+    stringValue(firstResultVideoPayload?.video_url);
 
   if (dataUrl) {
     return videoFromDataUrl(dataUrl, fileName, providerJobId);
@@ -844,6 +921,9 @@ async function providerOutputFromPayload(
 
 function firstVideoPayload(value: unknown): Record<string, unknown> | undefined {
   if (isRecord(value)) {
+    if (isRecord(value.data)) {
+      return value.data;
+    }
     if (Array.isArray(value.outputs) && isRecord(value.outputs[0])) {
       return value.outputs[0];
     }
@@ -856,6 +936,14 @@ function firstVideoPayload(value: unknown): Record<string, unknown> | undefined 
   return undefined;
 }
 
+function firstRecordFromArray(value: unknown): Record<string, unknown> | undefined {
+  return Array.isArray(value) && isRecord(value[0]) ? value[0] : undefined;
+}
+
+function firstArrayItem(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : undefined;
+}
+
 function providerJobFromJson(
   body: unknown,
   payload: Record<string, unknown> | undefined,
@@ -864,15 +952,27 @@ function providerJobFromJson(
 ): {
   providerJobId: string;
   statusUrl: string;
+  apiBaseUrl: string;
 } | undefined {
   const source = payload ?? (isRecord(body) ? body : undefined);
   if (!source) {
     return undefined;
   }
 
-  const providerJobId = stringValue(source.providerJobId) ?? stringValue(source.jobId) ?? stringValue(source.id);
+  const providerJobId =
+    stringValue(source.providerJobId) ??
+    stringValue(source.jobId) ??
+    stringValue(source.request_id) ??
+    stringValue(source.requestId) ??
+    stringValue(source.task_id) ??
+    stringValue(source.taskId) ??
+    stringValue(source.video_id) ??
+    stringValue(source.videoId) ??
+    stringValue(source.id);
   const rawStatusUrl = stringValue(source.statusUrl) ?? stringValue(source.pollUrl);
-  const statusUrl = rawStatusUrl ? resolveProviderUrl(rawStatusUrl, baseUrl) : statusUrlFromTemplate(config.statusUrl, providerJobId);
+  const statusUrl = rawStatusUrl
+    ? resolveProviderUrl(rawStatusUrl, baseUrl)
+    : statusUrlFromTemplate(config.statusUrl, providerJobId) ?? (providerJobId ? grok2ApiVideoStatusUrl(baseUrl, providerJobId) : undefined);
 
   if (!providerJobId || !statusUrl) {
     return undefined;
@@ -880,7 +980,8 @@ function providerJobFromJson(
 
   return {
     providerJobId,
-    statusUrl
+    statusUrl,
+    apiBaseUrl: baseUrl
   };
 }
 
@@ -888,6 +989,7 @@ async function pollProviderVideoJob(
   job: {
     providerJobId: string;
     statusUrl: string;
+    apiBaseUrl: string;
   },
   signal: AbortSignal | undefined,
   config: CustomHttpVideoProviderConfig,
@@ -939,23 +1041,60 @@ async function pollProviderVideoJob(
     }
 
     const status = providerStatusFromJson(body, payload);
-    if (status === "failed" || status === "cancelled") {
+    if (isFailureStatus(status)) {
       throw new VideoProviderError(
         "upstream_failure",
         providerFailureMessage(body, payload),
         502
       );
     }
-    if (status === "succeeded") {
-      throw new VideoProviderError(
-        "unsupported_provider_behavior",
-        "Video provider marked the job complete without a video result.",
-        502
-      );
+    if (isSuccessStatus(status)) {
+      return downloadGrok2ApiVideoContent(job.apiBaseUrl, job.providerJobId, signal, config, deadline);
     }
   }
 
   throw new VideoProviderError("upstream_failure", "Video provider job timed out.", 504);
+}
+
+async function downloadGrok2ApiVideoContent(
+  apiBaseUrl: string,
+  providerJobId: string,
+  signal: AbortSignal | undefined,
+  config: CustomHttpVideoProviderConfig,
+  deadline: number
+): Promise<VideoProviderOutput> {
+  const response = await fetchWithTimeout(
+    grok2ApiVideoContentUrl(apiBaseUrl, providerJobId),
+    {
+      method: "GET",
+      headers: requestHeaders(config, { includeContentType: false }),
+      signal
+    },
+    remainingTimeoutMs(deadline)
+  );
+  if (!response.ok) {
+    throw new VideoProviderError(
+      "upstream_failure",
+      await upstreamErrorMessage(response),
+      providerHttpStatus(response.status)
+    );
+  }
+
+  const mimeType = normalizedVideoMimeType(response.headers.get("content-type"));
+  if (!mimeType) {
+    throw new VideoProviderError(
+      "unsupported_provider_behavior",
+      "Video provider content endpoint did not return a video content type.",
+      502
+    );
+  }
+
+  return {
+    bytes: await readResponseBytes(response),
+    mimeType,
+    fileName: `${providerJobId}.mp4`,
+    providerJobId
+  };
 }
 
 async function pollGrokImagineVideoTask(
@@ -1036,6 +1175,149 @@ async function pollGrokImagineVideoTask(
   }
 
   throw new VideoProviderError("upstream_failure", "Grok Imagine video task timed out.", 504);
+}
+
+type GrokImagineEndpointProtocol = "legacy-videos" | "newapi-video-generations" | "open-video-generations";
+
+interface GrokImagineEndpoint {
+  protocol: GrokImagineEndpointProtocol;
+  baseUrl: string;
+  createUrl: string;
+  statusPath: string;
+}
+
+function grokImagineEndpointForBaseUrl(baseUrl: string): GrokImagineEndpoint {
+  const usesNewApiRelay = isNewApiRelayUrl(baseUrl);
+  const usesReApiRelay = isReApiRelayUrl(baseUrl);
+  const usesApimartRelay = isApimartRelayUrl(baseUrl);
+  const usesOpenVideoRelay = usesReApiRelay || usesApimartRelay;
+  const apiBaseUrl = usesReApiRelay
+    ? reApiGrokImagineApiBaseUrl(baseUrl)
+    : usesNewApiRelay || usesApimartRelay
+      ? grokImagineV1ApiBaseUrl(baseUrl)
+      : baseUrl;
+  if (usesOpenVideoRelay) {
+    return {
+      protocol: "open-video-generations",
+      baseUrl: apiBaseUrl,
+      createUrl: joinProviderPath(apiBaseUrl, "videos/generations"),
+      statusPath: "tasks"
+    };
+  }
+  if (usesNewApiRelay) {
+    return {
+      protocol: "newapi-video-generations",
+      baseUrl: apiBaseUrl,
+      createUrl: joinProviderPath(apiBaseUrl, "video/generations"),
+      statusPath: "video/generations"
+    };
+  }
+
+  return {
+    protocol: "legacy-videos",
+    baseUrl: apiBaseUrl,
+    createUrl: joinProviderPath(apiBaseUrl, "videos"),
+    statusPath: "videos"
+  };
+}
+
+function grokImagineV1ApiBaseUrl(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    const normalizedPath = url.pathname.replace(/\/+$/u, "");
+    if (normalizedPath.split("/").includes("v1")) {
+      return baseUrl;
+    }
+    url.pathname = `${normalizedPath}/v1`;
+    return url.toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
+function reApiGrokImagineApiBaseUrl(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    const normalizedPath = url.pathname.replace(/\/+$/u, "");
+    if (/\/api\/v1$/iu.test(normalizedPath)) {
+      return baseUrl;
+    }
+    url.pathname = `${normalizedPath}/api/v1`;
+    return url.toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
+function isNewApiRelayUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const normalizedHost = url.hostname.toLowerCase();
+    const normalizedPath = url.pathname.toLowerCase();
+    return normalizedHost.includes("newapi") || normalizedHost.includes("linuxdo") || normalizedPath.includes("newapi");
+  } catch {
+    return baseUrl.toLowerCase().includes("newapi");
+  }
+}
+
+function isReApiRelayUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const normalizedHost = url.hostname.toLowerCase();
+    const normalizedPath = url.pathname.toLowerCase();
+    return normalizedHost.includes("reapi") || normalizedPath.includes("reapi");
+  } catch {
+    return baseUrl.toLowerCase().includes("reapi");
+  }
+}
+
+function isApimartRelayUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const normalizedHost = url.hostname.toLowerCase();
+    const normalizedPath = url.pathname.toLowerCase();
+    return normalizedHost.includes("apimart") || normalizedPath.includes("apimart");
+  } catch {
+    return baseUrl.toLowerCase().includes("apimart");
+  }
+}
+
+function grokImagineCreateRequestBody(
+  protocol: GrokImagineEndpointProtocol,
+  input: VideoProviderInput,
+  videoModel: string
+): Record<string, unknown> {
+  if (protocol === "open-video-generations") {
+    return {
+      prompt: input.prompt,
+      model: videoModel,
+      size: input.aspectRatio,
+      duration: Math.max(6, input.durationSeconds),
+      quality: "720p"
+    };
+  }
+
+  if (protocol === "newapi-video-generations") {
+    return {
+      prompt: input.prompt,
+      model: videoModel,
+      duration: input.durationSeconds,
+      width: input.size.width,
+      height: input.size.height,
+      size: videoSizeString(input.size)
+    };
+  }
+
+  return {
+    prompt: input.prompt,
+    model: videoModel,
+    seconds: String(input.durationSeconds),
+    size: videoSizeString(input.size)
+  };
+}
+
+function grokImagineStatusUrl(endpoint: GrokImagineEndpoint, taskId: string): string {
+  return joinProviderPath(endpoint.baseUrl, `${endpoint.statusPath}/${encodeURIComponent(taskId)}`);
 }
 
 function grokImagineTaskIdFromJson(body: unknown): string | undefined {
@@ -1691,7 +1973,7 @@ async function upstreamErrorMessage(response: Response): Promise<string> {
     if (mediaType(response.headers.get("content-type")) === "application/json") {
       const body = (await response.json()) as unknown;
       if (isRecord(body)) {
-        const message = stringValue(body.message) ?? (isRecord(body.error) ? stringValue(body.error.message) : undefined);
+        const message = upstreamJsonErrorMessage(body);
         if (message) {
           return sanitizeVideoErrorMessage(message);
         }
@@ -1702,6 +1984,37 @@ async function upstreamErrorMessage(response: Response): Promise<string> {
   }
 
   return `Video provider request failed with status ${response.status}.`;
+}
+
+function upstreamJsonErrorMessage(body: Record<string, unknown>): string | undefined {
+  const nested = nestedJsonError(body);
+  const directMessage = stringValue(body.message) ?? (isRecord(body.error) ? stringValue(body.error.message) : undefined);
+  const message = nested?.message ?? directMessage;
+  const param = nested?.param ?? (isRecord(body.error) ? stringValue(body.error.param) : undefined);
+  if (message && param === "model") {
+    return `${message} The upstream video gateway reported that its downstream request is missing model, even though this app sends the configured video model. Check whether the relay supports this model on its openai-video endpoint.`;
+  }
+  return message;
+}
+
+function nestedJsonError(body: Record<string, unknown>): { message?: string; param?: string } | undefined {
+  const value = stringValue(body.message) ?? (isRecord(body.error) ? stringValue(body.error.message) : undefined);
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (isRecord(parsed)) {
+      const nested = nestedJsonError(parsed);
+      return {
+        message: nested?.message ?? stringValue(parsed.message) ?? (isRecord(parsed.error) ? stringValue(parsed.error.message) : undefined),
+        param: nested?.param ?? (isRecord(parsed.error) ? stringValue(parsed.error.param) : undefined)
+      };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 export function sanitizeVideoErrorMessage(message: string): string {
@@ -1829,6 +2142,10 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringFromValue(value: unknown): string | undefined {
+  return stringValue(value);
 }
 
 function numericValue(value: unknown): number | undefined {

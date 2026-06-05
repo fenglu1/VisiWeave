@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Local AI image canvas for prompt-to-image generation, reference-image generation, and multi-step Agent planning. It combines tldraw, Hono, SQLite, and GPT Image 2 into a local-first creative workspace.
+GPT Image Canvas is a local-first AI creative workspace for image and video generation. It combines a tldraw canvas, a Hono API, SQLite persistence, OpenAI-compatible image providers, Agent planning, and optional cloud backup so creators can generate, arrange, revisit, and export assets from one workstation.
 
 Current version: `v0.2.0`.
 
@@ -10,24 +10,26 @@ Current version: `v0.2.0`.
 
 ![GPT Image Canvas preview](docs/assets/app-preview.png)
 
-## What It Does
+## Highlights
 
-- Create and arrange AI-generated images on a tldraw canvas.
-- Generate from text prompts or use selected canvas images as references.
-- Save project state, generation history, and generated assets locally.
-- Configure image providers from `.env`, the in-app provider dialog, or Codex login.
-- Plan multi-image work in the Agent tab, then execute DAG-based generation jobs around a plan node.
-- Optionally back up new generated images to Tencent Cloud COS.
-- Browse local outputs in Gallery, including rerun, locate, download, and upload status.
+- Infinite tldraw canvas for arranging generated images, references, and Agent plan nodes.
+- Manual prompt-to-image generation with size, quality, format, and style controls.
+- Reference-image generation from selected canvas images.
+- Agent planning for multi-image jobs, with inspectable DAG execution and retry support.
+- Creative Video and Video Library workflows for text-to-video jobs and saved video assets.
+- Image provider configuration from `.env`, local in-app settings, or Codex login fallback.
+- Video provider configuration for keyframe image video, Grok Imagine, and custom HTTP/OpenAI-compatible video gateways.
+- Local SQLite history for projects, generated assets, provider settings, Agent settings, and optional Tencent Cloud COS backup state.
+- Gallery tools for browsing, locating, rerunning, downloading, and inspecting local outputs.
 
 ## Requirements
 
-- Node.js `24.15.0`. The repo includes `.nvmrc` and `.node-version`.
-- pnpm `9.14.2`. The version is pinned in `package.json`.
-- An OpenAI API key with access to `gpt-image-2`, an OpenAI-compatible image endpoint, or a Codex login completed inside the app.
-- Docker Desktop or a compatible Docker Engine, only if you want the Docker workflow.
+- Node.js `24.15.0`; the repository includes `.nvmrc` and `.node-version`.
+- pnpm `9.14.2`; the package manager is pinned in `package.json`.
+- An OpenAI API key with access to `gpt-image-2`, an OpenAI-compatible image endpoint, or Codex login completed inside the app.
+- Docker Desktop or a compatible Docker Engine if you want the Docker workflow.
 
-Activate the pinned package manager with Corepack if needed:
+Activate the pinned package manager with Corepack when needed:
 
 ```sh
 corepack prepare pnpm@9.14.2 --activate
@@ -58,11 +60,11 @@ Open the web app at [http://localhost:5173](http://localhost:5173).
 - API: [http://127.0.0.1:8787](http://127.0.0.1:8787)
 - Web: [http://localhost:5173](http://localhost:5173), proxying `/api` to the API service
 
-The app can start without credentials. Without a usable provider, `/` shows the credential-aware homepage and generation requests return `missing_provider` until you configure one.
+The app can start without credentials. Without a configured provider, `/` shows the credential-aware home page and generation requests return `missing_provider` until you configure one.
 
-## Configure Generation
+## Configure Image Generation
 
-The default provider order is:
+The image provider source order is:
 
 1. Environment OpenAI-compatible config from `.env` or runtime variables.
 2. Local OpenAI-compatible config saved in the app.
@@ -77,26 +79,62 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_IMAGE_TIMEOUT_MS=1200000
 ```
 
-Leave `OPENAI_BASE_URL` empty for the official OpenAI API. Set it to an OpenAI-compatible `/v1` endpoint when using another provider, and set `OPENAI_IMAGE_MODEL` if that endpoint expects a different image model name.
+Leave `OPENAI_BASE_URL` empty for the official OpenAI API. Set it to an OpenAI-compatible `/v1` endpoint when using another provider, and set `OPENAI_IMAGE_MODEL` if that endpoint expects a different model name.
 
-You can also open the top-right `配置` dialog and save one local OpenAI-compatible provider. Local keys are stored in SQLite under `DATA_DIR`, returned only as masked values, and preserved until you enter a replacement key.
+You can also open the top-right provider settings dialog and save one local OpenAI-compatible provider. Local keys are stored in SQLite under `DATA_DIR`, returned only as masked values, and preserved until you enter a replacement key.
+
+## Configure Video Generation
+
+Video generation is optional and configured separately from image generation.
+
+The supported video provider kinds are:
+
+- `keyframe-image`: creates video from generated image keyframes and FFmpeg interpolation.
+- `grok-imagine`: calls Grok Imagine-compatible video endpoints and common relay shapes.
+- `custom-http`: calls an OpenAI-compatible/custom HTTP video gateway.
+
+Example `.env` values:
+
+```env
+VIDEO_PROVIDER_KIND=grok-imagine
+VIDEO_PROVIDER_URL=https://video-provider.example.com/v1
+VIDEO_PROVIDER_MODEL=grok-imagine-video
+VIDEO_PROVIDER_API_KEY=
+VIDEO_PROVIDER_DOWNLOAD_PROXY_URL=
+```
+
+For custom HTTP video gateways, the app can use a base URL or mode-specific URLs:
+
+```env
+VIDEO_PROVIDER_KIND=custom-http
+VIDEO_PROVIDER_URL=https://video-provider.example.com
+VIDEO_PROVIDER_TEXT_TO_VIDEO_URL=
+VIDEO_PROVIDER_IMAGE_TO_VIDEO_URL=
+VIDEO_PROVIDER_STATUS_URL=
+VIDEO_PROVIDER_MODEL=grok-imagine-video
+VIDEO_PROVIDER_API_KEY=
+```
+
+Video provider secrets must stay in `.env` or the local SQLite database. Do not commit real keys.
 
 ## Routes
 
-- `/` is the credential-aware homepage. It offers `Codex 登录` and `接入 API` when no provider is available.
+- `/` is the credential-aware home page. It offers Codex login and API setup when no provider is available.
 - `/canvas` is the working canvas. Without a provider, it redirects back to `/`.
-- `/gallery` remains available even without credentials, so local work can still be viewed.
+- `/gallery` remains available even without credentials, so local image work can still be viewed.
+- `/creative-video` is the video generation workspace.
+- `/video-library` lists saved local video outputs and job status.
 
-Environment values are read-only in the provider dialog. If you change `.env`, restart the API or Docker container.
+Environment values are read-only in the provider dialog. Restart the API or Docker container after changing `.env`.
 
-## Using the Canvas
+## Using The Canvas
 
 The right-side panel has two main flows:
 
 - `Manual`: enter a prompt, choose size/quality/format, and generate. Selecting one image shape switches the flow into reference-image generation.
 - `Agent`: describe a multi-image task, optionally select up to three canvas images, review the generated plan node, then execute it.
 
-Agent planning uses a separate OpenAI-compatible chat configuration from the image provider. Save it in the Agent LLM settings with API key, Base URL, model, timeout, and `supportsVision`.
+Agent planning uses a separate OpenAI-compatible chat configuration from the image provider. Save it in Agent LLM settings with API key, base URL, model, timeout, and `supportsVision`.
 
 When `supportsVision` is enabled, selected images are attached to the planning request as multimodal inputs. When disabled, selected images are passed only as reference handles for later image generation. Agent messages are not persisted in this version; plan nodes already on the canvas are saved with the normal canvas snapshot.
 
@@ -121,11 +159,11 @@ Saving COS settings performs a test upload and delete before the config is persi
 ## Project Layout
 
 ```text
-apps/api         Hono API, SQLite storage, provider selection, Agent planning/execution
-apps/web         Vite + React + tldraw web app
-packages/shared  Shared contracts and constants
-docs             Project docs and preview assets
-data             Local runtime data, ignored by Git
+apps/api          Hono API, SQLite storage, provider selection, Agent planning/execution, video jobs
+apps/web          Vite + React + tldraw web app
+packages/shared   Shared contracts and constants
+docs              Project docs and preview assets
+data              Local runtime data, ignored by Git
 ```
 
 ## Scripts
@@ -141,6 +179,9 @@ data             Local runtime data, ignored by Git
 | `pnpm --filter @gpt-image-canvas/api smoke:planner` | Check Agent plan validation fixtures. |
 | `pnpm --filter @gpt-image-canvas/api smoke:agent` | Check Agent config and WebSocket basics. |
 | `pnpm --filter @gpt-image-canvas/api smoke:executor` | Check Agent DAG execution with a fake image provider. |
+| `pnpm --filter @gpt-image-canvas/api smoke:provider-video-config` | Check video provider configuration behavior. |
+| `pnpm --filter @gpt-image-canvas/api smoke:grok-imagine-video` | Check Grok Imagine video gateway handling. |
+| `pnpm --filter @gpt-image-canvas/api smoke:custom-http-grok2api-video` | Check custom HTTP/grok2api-style video handling. |
 
 Before completing code changes, run:
 
@@ -198,27 +239,23 @@ Use `docker compose config --quiet --no-env-resolution` when real credentials ex
 
 Compose defaults `SQLITE_JOURNAL_MODE=DELETE` and `SQLITE_LOCKING_MODE=EXCLUSIVE` to avoid SQLite shared-memory errors on Docker Desktop bind mounts. Avoid running `pnpm dev` and Docker against the same `data/` directory at the same time.
 
-The Compose build accepts these network-related build args, but third-party mirrors are not hardcoded by default. Set them explicitly in `.env` or the shell when your network needs a registry or apt mirror:
+The Compose build accepts these network-related build args. Set them explicitly in `.env` or the shell when your network needs a registry or apt mirror:
 
 - `NODE_IMAGE`
 - `NPM_CONFIG_REGISTRY`
 - `APT_MIRROR`
 - `APT_SECURITY_MIRROR`
 
-The default `NODE_IMAGE` is `node:24.15.0-bookworm-slim`. Example:
-
-```sh
-NPM_CONFIG_REGISTRY=https://registry.example.com docker compose build
-```
+The default `NODE_IMAGE` is `node:24.15.0-bookworm-slim`.
 
 ## Runtime Data And Secrets
 
 `DATA_DIR` defaults to `./data` locally and `/app/data` in Docker. It contains:
 
 - `gpt-image-canvas.sqlite`: project state, generation history, asset metadata, provider config, Agent LLM config, optional COS config, and Codex OAuth token records.
-- `assets/`: generated image files.
+- `assets/`: generated image and video files.
 
-Do not commit `.env`, `.ralph/`, `.codex-temp/`, `data/`, generated images, SQLite databases, or build output.
+Do not commit `.env`, `.ralph/`, `.codex-temp/`, `data/`, generated assets, SQLite databases, or build output.
 
 Treat `data/gpt-image-canvas.sqlite` as sensitive after saving local provider keys, Agent LLM keys, COS secrets, or Codex tokens. The app is designed for local workstation use; do not expose it publicly without adding your own authentication and network controls.
 
@@ -226,16 +263,14 @@ If a real API key was ever committed, rotate the key. Git ignore rules prevent f
 
 ## Troubleshooting
 
-- Missing provider: add `OPENAI_API_KEY` to `.env` and restart, save a local provider from `配置`, or complete `Codex 登录`.
-- Codex login fails: confirm the machine can reach `https://auth.openai.com`, keep the login dialog open, and restart the flow if the user code expires.
-- Custom endpoint fails: confirm `OPENAI_BASE_URL` points to an OpenAI-compatible `/v1` endpoint and supports the configured image model.
+- Missing provider: add `OPENAI_API_KEY` to `.env` and restart, save a local provider from settings, or complete Codex login.
+- Custom image endpoint fails: confirm `OPENAI_BASE_URL` points to an OpenAI-compatible `/v1` endpoint and supports the configured image model.
+- Video provider fails: confirm `VIDEO_PROVIDER_KIND`, URL, model, and API key match the selected gateway.
 - Agent cannot plan: save the Agent LLM config separately from the image provider config. If `supportsVision` is enabled and the request fails, try fewer or smaller selected images.
-- Agent plan cannot execute: confirm the normal image provider is configured; Agent planning and image generation use separate configs.
 - Port conflict: set `PORT` for API/Docker. For web dev, stop the process on `5173` or run `pnpm web:dev -- --port 5174`.
 - Docker cannot pull the base image: restore Docker Hub access or set `NODE_IMAGE` to an equivalent cached Node `24.15.0` image.
 - SQLite `SQLITE_IOERR_SHMOPEN` in Docker: keep the Compose SQLite defaults, rebuild, and make sure no local API process is using the same database.
 - SQLite `SQLITE_CORRUPT`: stop all app processes, back up `data/`, then restore from backup or remove the SQLite files to create a clean database. Files under `data/assets/` can be kept.
-- Stale local state: stop the app and remove files under `data/`. This deletes local project state, history, and generated assets.
 
 ## Upgrading
 
@@ -257,22 +292,10 @@ docker compose up --build
 
 Rebuild the web app and API together after an upgrade.
 
-## Codex Notes
-
-Codex can work directly in this repository. Let it read `AGENTS.md`, then use the pinned package manager:
-
-```sh
-pnpm install
-pnpm typecheck
-pnpm build
-```
-
-Keep credentials out of prompts and logs. For Ralph-driven work, read `docs/ralph-execution.md`; keep PRDs under `.agents/tasks/`, runtime state under `.ralph/`, and scratch files under `.codex-temp/`.
-
 ## License
 
 MIT
 
-## Friendly Links
+## Links
 
-- [LINUX DO - 新的理想型社区](https://linux.do/)
+- [LINUX DO](https://linux.do/)

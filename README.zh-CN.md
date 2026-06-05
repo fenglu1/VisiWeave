@@ -2,32 +2,34 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-GPT Image Canvas 是一个本地优先的 AI 图像画布，支持文生图、参考图生成和多步骤 Agent 规划。项目基于 tldraw、Hono、SQLite 和 GPT Image 2 构建，适合在本机完成创作、管理历史和保存生成资产。
+GPT Image Canvas 是一个本地优先的 AI 创作工作台，支持图像生成、参考图生成、多步骤 Agent 规划和视频生成。项目把 tldraw 画布、Hono API、SQLite 本地持久化、OpenAI 兼容 provider、可选腾讯云 COS 备份组合在一起，适合在自己的电脑上完成创作、整理、复用和导出资产。
 
 当前版本：`v0.2.0`。
 
-## 效果图
+## 预览
 
-![GPT Image Canvas 效果图](docs/assets/app-preview.png)
+![GPT Image Canvas 预览图](docs/assets/app-preview.png)
 
-## 能做什么
+## 主要功能
 
-- 在 tldraw 画布上生成、摆放和管理 AI 图像。
-- 支持文本提示词生成，也支持选中画布图片作为参考图生成。
-- 默认将项目快照、生成历史和生成资产保存在本地。
-- 支持从 `.env`、应用内配置弹窗或 Codex 登录中选择生成服务。
-- 右侧 Agent Tab 可以把多图需求规划成计划节点，再按依赖关系执行生图任务。
-- 可选启用腾讯云 COS，将新生成图备份到云端。
-- Gallery 支持查看本地作品，并提供定位、重跑、下载和上传状态。
+- 在无限 tldraw 画布上摆放生成图、参考图和 Agent 计划节点。
+- 手动文生图，支持尺寸、质量、格式和风格预设。
+- 选中画布图片后作为参考图继续生成。
+- Agent 可以把多图任务规划成可检查的 DAG，并支持失败重试。
+- Creative Video 和 Video Library 支持文生视频任务与本地视频资产管理。
+- 图像 provider 可来自 `.env`、应用内本地配置或 Codex 登录兜底。
+- 视频 provider 支持关键帧图像视频、Grok Imagine 以及 custom HTTP/OpenAI 兼容视频网关。
+- SQLite 本地保存项目状态、生成历史、资产元数据、provider 配置、Agent 配置和可选 COS 上传状态。
+- Gallery 支持浏览、定位、重跑、下载和检查本地输出。
 
 ## 环境要求
 
-- Node.js `24.15.0`。仓库包含 `.nvmrc` 和 `.node-version`。
-- pnpm `9.14.2`。版本已固定在 `package.json`。
-- 可访问 `gpt-image-2` 的 OpenAI API key、OpenAI 兼容图像端点，或在应用内完成的 Codex 登录。
+- Node.js `24.15.0`；仓库内包含 `.nvmrc` 和 `.node-version`。
+- pnpm `9.14.2`；版本已经在 `package.json` 中固定。
+- 可访问 `gpt-image-2` 的 OpenAI API key、OpenAI 兼容图像端点，或在应用内完成 Codex 登录。
 - Docker Desktop 或兼容 Docker Engine，仅 Docker 工作流需要。
 
-如果需要启用固定 pnpm 版本：
+如需启用固定 pnpm 版本：
 
 ```sh
 corepack prepare pnpm@9.14.2 --activate
@@ -56,19 +58,19 @@ pnpm dev
 `pnpm dev` 会同时启动两个本地服务：
 
 - API：[http://127.0.0.1:8787](http://127.0.0.1:8787)
-- Web：[http://localhost:5173](http://localhost:5173)，并将 `/api` 代理到 API 服务
+- Web：[http://localhost:5173](http://localhost:5173)，并把 `/api` 代理到 API 服务
 
-应用可以在没有凭证的情况下启动。没有可用 provider 时，`/` 会显示凭据感知首页，生图请求会返回 `missing_provider`，直到你配置好生成服务。
+应用可以在没有凭证的情况下启动。没有可用 provider 时，`/` 会显示凭证感知首页，生成请求会返回 `missing_provider`，直到你完成配置。
 
-## 配置生成服务
+## 配置图像生成
 
-默认 provider 优先级是：
+图像 provider 的默认优先级是：
 
 1. `.env` 或运行时环境变量中的 OpenAI 兼容配置。
 2. 应用内保存的本地 OpenAI 兼容配置。
 3. Codex 登录兜底。
 
-最简单的 API Key 配置方式是编辑 `.env`：
+最简单的 API key 配置方式是编辑 `.env`：
 
 ```env
 OPENAI_API_KEY=
@@ -77,15 +79,51 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_IMAGE_TIMEOUT_MS=1200000
 ```
 
-使用官方 OpenAI API 时留空 `OPENAI_BASE_URL`。如果使用其他 OpenAI 兼容服务，将它设置为兼容的 `/v1` 端点；如果该端点需要不同的图像模型名，修改 `OPENAI_IMAGE_MODEL`。
+使用官方 OpenAI API 时留空 `OPENAI_BASE_URL`。如果使用其他 OpenAI 兼容服务，把它设置为兼容的 `/v1` 端点；如果该端点需要不同的图像模型名，修改 `OPENAI_IMAGE_MODEL`。
 
-也可以打开右上角 `配置` 弹窗，保存一个本地 OpenAI 兼容 provider。本地 key 会存储在 `DATA_DIR` 下的 SQLite 数据库中，读取时只返回掩码，并会一直保留到你输入新 key 替换它。
+也可以打开右上角 provider 设置弹窗，保存一套本地 OpenAI 兼容配置。本地 key 会存储在 `DATA_DIR` 下的 SQLite 数据库中，读取时只返回掩码，并一直保留到你输入新 key 替换它。
+
+## 配置视频生成
+
+视频生成是可选能力，并且与图像生成分开配置。
+
+支持的视频 provider 类型：
+
+- `keyframe-image`：使用图像关键帧和 FFmpeg 插值生成视频。
+- `grok-imagine`：调用 Grok Imagine 兼容视频端点和常见中转网关。
+- `custom-http`：调用 OpenAI 兼容或自定义 HTTP 视频网关。
+
+`.env` 示例：
+
+```env
+VIDEO_PROVIDER_KIND=grok-imagine
+VIDEO_PROVIDER_URL=https://video-provider.example.com/v1
+VIDEO_PROVIDER_MODEL=grok-imagine-video
+VIDEO_PROVIDER_API_KEY=
+VIDEO_PROVIDER_DOWNLOAD_PROXY_URL=
+```
+
+custom HTTP 视频网关可以使用基础 URL，也可以配置不同模式的 URL：
+
+```env
+VIDEO_PROVIDER_KIND=custom-http
+VIDEO_PROVIDER_URL=https://video-provider.example.com
+VIDEO_PROVIDER_TEXT_TO_VIDEO_URL=
+VIDEO_PROVIDER_IMAGE_TO_VIDEO_URL=
+VIDEO_PROVIDER_STATUS_URL=
+VIDEO_PROVIDER_MODEL=grok-imagine-video
+VIDEO_PROVIDER_API_KEY=
+```
+
+视频 provider 密钥只能保存在 `.env` 或本地 SQLite 数据库中，不要提交真实 key。
 
 ## 路由说明
 
-- `/` 是凭据感知首页。没有 provider 时会提供 `Codex 登录` 和 `接入 API`。
+- `/` 是凭证感知首页。没有 provider 时会提供 Codex 登录和 API 接入入口。
 - `/canvas` 是画布工作区。没有 provider 时会返回 `/`。
-- `/gallery` 始终可访问，方便在没有凭证时查看本地作品。
+- `/gallery` 始终可以访问，方便在没有凭证时查看本地图片作品。
+- `/creative-video` 是视频生成工作区。
+- `/video-library` 展示本地保存的视频输出和任务状态。
 
 Provider 弹窗中的环境变量是只读的。修改 `.env` 后，需要重启 API 或 Docker 容器。
 
@@ -96,11 +134,11 @@ Provider 弹窗中的环境变量是只读的。修改 `.env` 后，需要重启
 - `Manual`：输入提示词，选择尺寸、质量和格式后生成。选中一张图片形状时，会切换到参考图生成。
 - `Agent`：描述一个多图任务，可选中最多 3 张画布图片作为参考；确认生成的计划节点后执行。
 
-Agent 规划使用独立于图像 provider 的 OpenAI 兼容聊天配置。请在 Agent LLM 设置中保存 API Key、Base URL、模型、超时和 `supportsVision`。
+Agent 规划使用独立于图像 provider 的 OpenAI 兼容聊天配置。请在 Agent LLM 设置中保存 API key、Base URL、模型、超时和 `supportsVision`。
 
-开启 `supportsVision` 时，选中的图片会作为多模态输入传给规划模型。关闭时，选中图片只作为后续生图的 reference handle，Agent 不应声称自己看过图片内容。当前版本不持久化 Agent 对话消息；刷新页面会清空对话，但已经落在画布上的计划节点会随普通 canvas snapshot 保存。
+开启 `supportsVision` 时，选中的图片会作为多模态输入传给规划模型。关闭时，选中图片只作为后续生图的 reference handle；Agent 不应声称自己看过图片内容。当前版本不持久化 Agent 对话消息，但已经落在画布上的计划节点会随普通 canvas snapshot 保存。
 
-计划执行按 DAG 调度。互不依赖的 job 可以并发运行；引用上游生成图的 job 会等待依赖完成；`Retry failed` 会只重跑失败或被阻塞的 job，并保留已成功的上游输出。单个计划最多生成 16 张图，包含中间锚点图。
+计划执行按 DAG 调度。互不依赖的 job 可以并发运行；引用上游生成图的 job 会等待依赖完成；`Retry failed` 只重跑失败或被阻塞的 job，并保留已经成功的上游输出。单个计划最多生成 16 张图，包括中间锚点图。
 
 ## 云端备份
 
@@ -121,11 +159,11 @@ COS 弹窗默认值来自：
 ## 项目结构
 
 ```text
-apps/api         Hono API、SQLite 存储、provider 选择、Agent 规划与执行
-apps/web         Vite + React + tldraw Web 应用
-packages/shared  共享契约和常量
-docs             项目文档和预览素材
-data             本地运行时数据，已被 Git 忽略
+apps/api          Hono API、SQLite 存储、provider 选择、Agent 规划与执行、视频任务
+apps/web          Vite + React + tldraw Web 应用
+packages/shared   共享契约和常量
+docs              项目文档和预览素材
+data              本地运行时数据，已被 Git 忽略
 ```
 
 ## 常用脚本
@@ -141,6 +179,9 @@ data             本地运行时数据，已被 Git 忽略
 | `pnpm --filter @gpt-image-canvas/api smoke:planner` | 检查 Agent plan 校验 fixture。 |
 | `pnpm --filter @gpt-image-canvas/api smoke:agent` | 检查 Agent 配置和 WebSocket 基础行为。 |
 | `pnpm --filter @gpt-image-canvas/api smoke:executor` | 用 fake image provider 检查 Agent DAG 执行器。 |
+| `pnpm --filter @gpt-image-canvas/api smoke:provider-video-config` | 检查视频 provider 配置行为。 |
+| `pnpm --filter @gpt-image-canvas/api smoke:grok-imagine-video` | 检查 Grok Imagine 视频网关适配。 |
+| `pnpm --filter @gpt-image-canvas/api smoke:custom-http-grok2api-video` | 检查 custom HTTP/grok2api 风格视频适配。 |
 
 完成代码改动前请运行：
 
@@ -161,7 +202,7 @@ pnpm --filter @gpt-image-canvas/api rebuild better-sqlite3 --stream
 
 Docker Compose 会把共享契约、Web 应用和 API 构建到同一个镜像中。API 在同一个本地端口同时提供 `/api` 和构建后的 Web bundle。SQLite 数据和生成资产会持久化到宿主机 `./data`。
 
-推荐使用仓库内置启动脚本，它会自动创建本机 `.env`，先执行不会展开密钥的 Compose 配置校验，再启动容器：
+推荐使用仓库内置启动脚本，它会在缺少本地 `.env` 时自动创建，先执行不会展开密钥的 Compose 配置校验，再启动容器。
 
 Windows PowerShell：
 
@@ -185,7 +226,7 @@ sh scripts/docker-start.sh
 sh scripts/docker-start.sh --detached
 ```
 
-如需手动执行，命令等价于：
+手动启动等价于：
 
 ```sh
 docker compose config --quiet --no-env-resolution
@@ -198,27 +239,23 @@ docker compose up --build
 
 Compose 默认设置 `SQLITE_JOURNAL_MODE=DELETE` 和 `SQLITE_LOCKING_MODE=EXCLUSIVE`，用于避开 Docker Desktop 绑定挂载目录时常见的 SQLite shared-memory 错误。不要让 `pnpm dev` 和 Docker 同时使用同一个 `data/` 目录。
 
-Compose 构建支持这些网络相关 build args，但默认不写死第三方镜像源。需要内网镜像或代理时，在 `.env` 或命令行中显式设置：
+Compose 构建支持这些网络相关 build args。需要内网镜像或代理时，在 `.env` 或命令行中显式设置：
 
 - `NODE_IMAGE`
 - `NPM_CONFIG_REGISTRY`
 - `APT_MIRROR`
 - `APT_SECURITY_MIRROR`
 
-默认 `NODE_IMAGE` 是 `node:24.15.0-bookworm-slim`。示例：
-
-```sh
-NPM_CONFIG_REGISTRY=https://registry.example.com docker compose build
-```
+默认 `NODE_IMAGE` 是 `node:24.15.0-bookworm-slim`。
 
 ## 本地数据与密钥
 
 `DATA_DIR` 本地默认是 `./data`，Docker 中默认是 `/app/data`。其中包含：
 
 - `gpt-image-canvas.sqlite`：项目状态、生成历史、资产元数据、provider 配置、Agent LLM 配置、可选 COS 配置，以及 Codex OAuth token 记录。
-- `assets/`：生成的图像文件。
+- `assets/`：生成的图像和视频文件。
 
-不要提交 `.env`、`.ralph/`、`.codex-temp/`、`data/`、生成图像、SQLite 数据库或构建输出。
+不要提交 `.env`、`.ralph/`、`.codex-temp/`、`data/`、生成资产、SQLite 数据库或构建输出。
 
 保存本地 provider key、Agent LLM key、COS secret 或 Codex token 后，请把 `data/gpt-image-canvas.sqlite` 视为敏感文件。当前应用面向本地工作站使用；如果没有自行增加认证和网络隔离，不要把它公开暴露。
 
@@ -226,16 +263,14 @@ NPM_CONFIG_REGISTRY=https://registry.example.com docker compose build
 
 ## 故障排查
 
-- 缺少 provider：在 `.env` 添加 `OPENAI_API_KEY` 并重启，或从 `配置` 保存本地 provider，或完成 `Codex 登录`。
-- Codex 登录失败：确认机器可以访问 `https://auth.openai.com`，保持登录弹窗打开；用户码过期后重新开始流程。
-- 自定义端点失败：确认 `OPENAI_BASE_URL` 指向 OpenAI 兼容 `/v1` 端点，并支持当前图像模型。
+- 缺少 provider：在 `.env` 添加 `OPENAI_API_KEY` 并重启，或从设置弹窗保存本地 provider，或完成 Codex 登录。
+- 自定义图像端点失败：确认 `OPENAI_BASE_URL` 指向 OpenAI 兼容 `/v1` 端点，并支持当前图像模型。
+- 视频 provider 失败：确认 `VIDEO_PROVIDER_KIND`、URL、模型和 API key 与所选网关匹配。
 - Agent 无法规划：Agent LLM 配置需要独立于图像 provider 保存。如果开启 `supportsVision` 后失败，减少选中图片数量或尺寸。
-- Agent 计划无法执行：确认普通图像 provider 已配置；Agent 规划和实际生图使用的是两套配置。
 - 端口冲突：为 API/Docker 设置 `PORT`。Web 开发端口冲突时，停止占用 `5173` 的进程，或运行 `pnpm web:dev -- --port 5174`。
-- Docker 无法拉取基础镜像：恢复 Docker Hub 访问，或将 `NODE_IMAGE` 设置为本地缓存的等价 Node `24.15.0` 镜像。
+- Docker 无法拉取基础镜像：恢复 Docker Hub 访问，或把 `NODE_IMAGE` 设置为本地缓存的等价 Node `24.15.0` 镜像。
 - Docker 中出现 SQLite `SQLITE_IOERR_SHMOPEN`：保留 Compose 的 SQLite 默认值，重新构建，并确认没有本地 API 进程同时占用同一个数据库。
-- SQLite `SQLITE_CORRUPT`：停止所有应用进程，备份 `data/`，再从备份恢复，或删除 SQLite 文件让应用创建新数据库。`data/assets/` 下的图片文件可以保留。
-- 本地状态过期或不需要：停止应用并删除 `data/` 下的文件。这会删除本地项目状态、历史记录和生成资产。
+- SQLite `SQLITE_CORRUPT`：停止所有应用进程，备份 `data/`，再从备份恢复，或删除 SQLite 文件让应用创建新数据库。`data/assets/` 下的资源文件可以保留。
 
 ## 升级
 
@@ -257,22 +292,10 @@ docker compose up --build
 
 升级后请一起重建 Web 应用和 API。
 
-## Codex 使用说明
-
-Codex 可以直接在本仓库工作。先让它读取 `AGENTS.md`，再使用固定包管理器：
-
-```sh
-pnpm install
-pnpm typecheck
-pnpm build
-```
-
-不要把凭证写进提示词或日志。Ralph 驱动的工作请先阅读 `docs/ralph-execution.md`；PRD 放在 `.agents/tasks/`，运行状态放在 `.ralph/`，临时文件放在 `.codex-temp/`。
-
 ## 许可证
 
 MIT
 
 ## 友情链接
 
-- [LINUX DO - 新的理想型社区](https://linux.do/)
+- [LINUX DO](https://linux.do/)

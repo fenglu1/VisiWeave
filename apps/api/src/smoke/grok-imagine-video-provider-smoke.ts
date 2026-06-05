@@ -137,6 +137,140 @@ async function main(): Promise<void> {
     expect(completedOutput.providerJobId === "task-smoke-grok-imagine", "video output exposes the remote Grok Imagine task id");
     expect(completedOutput.asset?.mimeType === "video/mp4", "video output asset is mp4");
 
+    const newApiActiveConfig = saveProviderConfig({
+      sourceOrder: ["local-openai", "env-openai", "codex"],
+      video: {
+        kind: "grok-imagine",
+        apiKey: fakeApiKey,
+        baseUrl: upstream.newApiOriginUrl,
+        videoModel: "grok-imagine-1.0-video",
+        pollIntervalMs: 10,
+        timeoutMs: 5_000
+      }
+    });
+    expect(newApiActiveConfig.video.kind === "grok-imagine", "local active video config switches back to Grok Imagine for NewAPI relay");
+
+    const newApiCreated = await app.request("/api/videos/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: "A sunrise lake timelapse with soft mist",
+        mode: "text_to_video",
+        durationSeconds: 5,
+        aspectRatio: "16:9",
+        providerKind: "grok-imagine"
+      })
+    });
+    expect(newApiCreated.status === 200, `NewAPI relay video generation request succeeds, got ${newApiCreated.status}`);
+    const newApiCreatedBody = (await newApiCreated.json()) as VideoGenerationJobResponse;
+    const newApiCompleted = await waitForVideoJob(app, newApiCreatedBody.job.id, () => `upstream calls: ${JSON.stringify(upstream.calls)}`);
+    expect(
+      newApiCompleted.job.status === "succeeded",
+      `NewAPI relay Grok Imagine video job succeeds; error: ${newApiCompleted.job.error ?? "none"}; ${JSON.stringify(upstream.calls)}`
+    );
+    expect(newApiCompleted.job.outputs[0]?.providerJobId === "task-smoke-newapi-grok-imagine", "NewAPI relay output exposes the remote task id");
+
+    saveProviderConfig({
+      sourceOrder: ["local-openai", "env-openai", "codex"],
+      video: {
+        kind: "grok-imagine",
+        apiKey: fakeApiKey,
+        baseUrl: upstream.reApiOriginUrl,
+        videoModel: "grok-imagine-1.0-video",
+        pollIntervalMs: 10,
+        timeoutMs: 5_000
+      }
+    });
+    const reApiCreated = await app.request("/api/videos/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: "A quiet forest path at golden hour",
+        mode: "text_to_video",
+        durationSeconds: 5,
+        aspectRatio: "16:9",
+        providerKind: "grok-imagine"
+      })
+    });
+    expect(reApiCreated.status === 200, `reAPI relay video generation request succeeds, got ${reApiCreated.status}`);
+    const reApiCreatedBody = (await reApiCreated.json()) as VideoGenerationJobResponse;
+    const reApiCompleted = await waitForVideoJob(app, reApiCreatedBody.job.id, () => `upstream calls: ${JSON.stringify(upstream.calls)}`);
+    expect(
+      reApiCompleted.job.status === "succeeded",
+      `reAPI relay Grok Imagine video job succeeds; error: ${reApiCompleted.job.error ?? "none"}; ${JSON.stringify(upstream.calls)}`
+    );
+    expect(reApiCompleted.job.outputs[0]?.providerJobId === "task-smoke-reapi-grok-imagine", "reAPI relay output exposes the remote task id");
+
+    saveProviderConfig({
+      sourceOrder: ["local-openai", "env-openai", "codex"],
+      video: {
+        kind: "grok-imagine",
+        apiKey: fakeApiKey,
+        baseUrl: upstream.apimartOriginUrl,
+        videoModel: "grok-imagine-1.0-video-apimart",
+        pollIntervalMs: 10,
+        timeoutMs: 5_000
+      }
+    });
+    const apimartCreated = await app.request("/api/videos/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: "A tiny boat crossing a blue bay",
+        mode: "text_to_video",
+        durationSeconds: 5,
+        aspectRatio: "16:9",
+        providerKind: "grok-imagine"
+      })
+    });
+    expect(apimartCreated.status === 200, `APIMart relay video generation request succeeds, got ${apimartCreated.status}`);
+    const apimartCreatedBody = (await apimartCreated.json()) as VideoGenerationJobResponse;
+    const apimartCompleted = await waitForVideoJob(app, apimartCreatedBody.job.id, () => `upstream calls: ${JSON.stringify(upstream.calls)}`);
+    expect(
+      apimartCompleted.job.status === "succeeded",
+      `APIMart relay Grok Imagine video job succeeds; error: ${apimartCompleted.job.error ?? "none"}; ${JSON.stringify(upstream.calls)}`
+    );
+    expect(apimartCompleted.job.outputs[0]?.providerJobId === "task-smoke-apimart-grok-imagine", "APIMart relay output exposes the remote task id");
+
+    saveProviderConfig({
+      sourceOrder: ["local-openai", "env-openai", "codex"],
+      video: {
+        kind: "grok-imagine",
+        apiKey: fakeApiKey,
+        baseUrl: upstream.futureppoBaseUrl,
+        videoModel: "grok-imagine-video",
+        pollIntervalMs: 10,
+        timeoutMs: 5_000
+      }
+    });
+    const futureppoCreated = await app.request("/api/videos/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: "A neon sign reflected in rainy pavement",
+        mode: "text_to_video",
+        durationSeconds: 5,
+        aspectRatio: "16:9",
+        providerKind: "grok-imagine"
+      })
+    });
+    expect(futureppoCreated.status === 200, `futureppo openai-video generation request succeeds, got ${futureppoCreated.status}`);
+    const futureppoCreatedBody = (await futureppoCreated.json()) as VideoGenerationJobResponse;
+    const futureppoCompleted = await waitForVideoJob(app, futureppoCreatedBody.job.id, () => `upstream calls: ${JSON.stringify(upstream.calls)}`);
+    expect(
+      futureppoCompleted.job.status === "succeeded",
+      `futureppo openai-video job succeeds; error: ${futureppoCompleted.job.error ?? "none"}; ${JSON.stringify(upstream.calls)}`
+    );
+    expect(futureppoCompleted.job.outputs[0]?.providerJobId === "task-smoke-futureppo-grok-imagine", "futureppo output exposes the remote task id");
+
     const libraryResponse = await app.request("/api/videos");
     expect(libraryResponse.status === 200, "video library request succeeds");
     const library = (await libraryResponse.json()) as VideoLibraryResponse;
@@ -150,9 +284,17 @@ async function main(): Promise<void> {
     expect(assetResponse.status === 200, "saved video asset is downloadable");
     expect(Buffer.from(await assetResponse.arrayBuffer()).equals(fakeVideoBytes), "downloaded saved asset matches upstream video bytes");
 
-    expect(upstream.calls.create === 2, "provider posts one default and one override Grok Imagine create request");
-    expect(upstream.calls.status >= 1, "provider polls Grok Imagine status");
-    expect(downloadProxy.calls.download === 4, "provider retries transient video downloads through environment proxy settings");
+    expect(upstream.calls.legacyCreate === 2, "provider posts one default and one override legacy Grok Imagine create request");
+    expect(upstream.calls.legacyStatus >= 1, "provider polls legacy Grok Imagine status");
+    expect(upstream.calls.newApiCreate === 1, "provider posts one NewAPI relay create request");
+    expect(upstream.calls.newApiStatus >= 1, "provider polls NewAPI relay status");
+    expect(upstream.calls.reApiCreate === 1, "provider posts one reAPI relay create request");
+    expect(upstream.calls.reApiStatus >= 1, "provider polls reAPI relay task status");
+    expect(upstream.calls.apimartCreate === 1, "provider posts one APIMart relay create request");
+    expect(upstream.calls.apimartStatus >= 1, "provider polls APIMart relay task status");
+    expect(upstream.calls.futureppoCreate === 1, "provider posts one futureppo openai-video create request");
+    expect(upstream.calls.futureppoStatus >= 1, "provider polls futureppo openai-video status");
+    expect(downloadProxy.calls.download === 12, "provider retries transient video downloads through environment proxy settings");
     expect(downloadProxy.calls.leakedAuthorization === 0, "provider does not forward API bearer auth to external video download URLs");
 
     console.log("grok imagine video provider smoke checks passed");
@@ -195,21 +337,42 @@ async function waitForVideoJob(
 
 async function startFakeGrokImagineServer(): Promise<{
   baseUrl: string;
+  newApiOriginUrl: string;
+  newApiBaseUrl: string;
+  reApiOriginUrl: string;
+  apimartOriginUrl: string;
+  futureppoBaseUrl: string;
   calls: {
-    create: number;
-    status: number;
+    legacyCreate: number;
+    legacyStatus: number;
+    newApiCreate: number;
+    newApiStatus: number;
+    reApiCreate: number;
+    reApiStatus: number;
+    apimartCreate: number;
+    apimartStatus: number;
+    futureppoCreate: number;
+    futureppoStatus: number;
   };
   close: () => Promise<void>;
 }> {
   const calls = {
-    create: 0,
-    status: 0
+    legacyCreate: 0,
+    legacyStatus: 0,
+    newApiCreate: 0,
+    newApiStatus: 0,
+    reApiCreate: 0,
+    reApiStatus: 0,
+    apimartCreate: 0,
+    apimartStatus: 0,
+    futureppoCreate: 0,
+    futureppoStatus: 0
   };
 
   const server = createServer(async (request, response) => {
     try {
       if (request.method === "POST" && request.url === "/v1/videos") {
-        calls.create += 1;
+        calls.legacyCreate += 1;
         expectBearerAuth(request);
         const body = await readJson(request);
         expect(body.model === "grok-imagine-video", "Grok Imagine create request includes configured model");
@@ -230,7 +393,7 @@ async function startFakeGrokImagineServer(): Promise<{
       }
 
       if (request.method === "GET" && request.url === "/v1/videos/task-smoke-grok-imagine") {
-        calls.status += 1;
+        calls.legacyStatus += 1;
         expectBearerAuth(request);
         writeJson(response, 200, {
           status: "done",
@@ -239,6 +402,150 @@ async function startFakeGrokImagineServer(): Promise<{
           video: {
             url: fakeDownloadUrl,
             duration: 5
+          }
+        });
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/newapi/v1/video/generations") {
+        calls.newApiCreate += 1;
+        expectBearerAuth(request);
+        const body = await readJson(request);
+        expect(body.model === "grok-imagine-1.0-video", "NewAPI relay create request includes configured model");
+        expect(body.prompt === "A sunrise lake timelapse with soft mist", "NewAPI relay create request includes prompt");
+        expect(body.duration === 5, "NewAPI relay create request sends numeric duration");
+        expect(body.width === 1280, "NewAPI relay create request sends numeric width");
+        expect(body.height === 720, "NewAPI relay create request sends numeric height");
+        expect(body.size === "1280x720", "NewAPI relay create request sends size as a widthxheight string");
+        writeJson(response, 201, {
+          id: "video-smoke-newapi-grok-imagine",
+          object: "video",
+          model: "grok-imagine-1.0-video",
+          task_id: "task-smoke-newapi-grok-imagine",
+          status: "processing"
+        });
+        return;
+      }
+
+      if (request.method === "GET" && request.url === "/newapi/v1/video/generations/task-smoke-newapi-grok-imagine") {
+        calls.newApiStatus += 1;
+        expectBearerAuth(request);
+        writeJson(response, 200, {
+          error: null,
+          format: "mp4",
+          status: "succeeded",
+          task_id: "task-smoke-newapi-grok-imagine",
+          url: fakeDownloadUrl,
+          metadata: {
+            duration: 5,
+            width: 1280,
+            height: 720
+          }
+        });
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/reapi/api/v1/videos/generations") {
+        calls.reApiCreate += 1;
+        expectBearerAuth(request);
+        const body = await readJson(request);
+        expect(body.model === "grok-imagine-1.0-video", "reAPI relay create request includes configured model");
+        expect(body.prompt === "A quiet forest path at golden hour", "reAPI relay create request includes prompt");
+        expect(body.size === "16:9", "reAPI relay create request sends aspect-ratio size");
+        expect(body.duration === 6, "reAPI relay create request clamps duration to the provider minimum");
+        expect(body.quality === "720p", "reAPI relay create request sends video quality");
+        writeJson(response, 200, {
+          id: "task-smoke-reapi-grok-imagine",
+          model: "grok-imagine-1.0-video",
+          status: "processing",
+          created_at: 1735000000
+        });
+        return;
+      }
+
+      if (request.method === "GET" && request.url === "/reapi/api/v1/tasks/task-smoke-reapi-grok-imagine") {
+        calls.reApiStatus += 1;
+        expectBearerAuth(request);
+        writeJson(response, 200, {
+          id: "task-smoke-reapi-grok-imagine",
+          model: "grok-imagine-1.0-video",
+          status: "completed",
+          progress: 100,
+          output: {
+            video_urls: [fakeDownloadUrl]
+          }
+        });
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/apimart/v1/videos/generations") {
+        calls.apimartCreate += 1;
+        expectBearerAuth(request);
+        const body = await readJson(request);
+        expect(body.model === "grok-imagine-1.0-video-apimart", "APIMart relay create request includes configured model");
+        expect(body.prompt === "A tiny boat crossing a blue bay", "APIMart relay create request includes prompt");
+        expect(body.size === "16:9", "APIMart relay create request sends aspect-ratio size");
+        expect(body.duration === 6, "APIMart relay create request clamps duration to the provider minimum");
+        expect(body.quality === "720p", "APIMart relay create request sends video quality");
+        writeJson(response, 200, {
+          code: 200,
+          data: {
+            id: "task-smoke-apimart-grok-imagine",
+            status: "submitted",
+            progress: 0,
+            type: "video"
+          }
+        });
+        return;
+      }
+
+      if (request.method === "GET" && request.url === "/apimart/v1/tasks/task-smoke-apimart-grok-imagine") {
+        calls.apimartStatus += 1;
+        expectBearerAuth(request);
+        writeJson(response, 200, {
+          code: 200,
+          data: {
+            id: "task-smoke-apimart-grok-imagine",
+            status: "completed",
+            progress: 100,
+            result: {
+              videos: [
+                {
+                  url: [fakeDownloadUrl],
+                  expires_at: 1763174708
+                }
+              ]
+            }
+          }
+        });
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/futureppo/v1/videos") {
+        calls.futureppoCreate += 1;
+        expectBearerAuth(request);
+        const body = await readJson(request);
+        expect(body.model === "grok-imagine-video", "futureppo openai-video request includes configured model");
+        expect(body.prompt === "A neon sign reflected in rainy pavement", "futureppo openai-video request includes prompt");
+        expect(body.seconds === "5", "futureppo openai-video request sends seconds as a string");
+        expect(body.size === "1280x720", "futureppo openai-video request sends size as a widthxheight string");
+        writeJson(response, 200, {
+          id: "task-smoke-futureppo-grok-imagine",
+          task_id: "task-smoke-futureppo-grok-imagine",
+          status: "queued"
+        });
+        return;
+      }
+
+      if (request.method === "GET" && request.url === "/futureppo/v1/videos/task-smoke-futureppo-grok-imagine") {
+        calls.futureppoStatus += 1;
+        expectBearerAuth(request);
+        writeJson(response, 200, {
+          task_id: "task-smoke-futureppo-grok-imagine",
+          status: "completed",
+          progress: 100,
+          video: {
+            url: fakeDownloadUrl
           }
         });
         return;
@@ -266,6 +573,11 @@ async function startFakeGrokImagineServer(): Promise<{
 
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    newApiOriginUrl: `http://127.0.0.1:${address.port}/newapi`,
+    newApiBaseUrl: `http://127.0.0.1:${address.port}/newapi/v1`,
+    reApiOriginUrl: `http://127.0.0.1:${address.port}/reapi`,
+    apimartOriginUrl: `http://127.0.0.1:${address.port}/apimart`,
+    futureppoBaseUrl: `http://127.0.0.1:${address.port}/futureppo/v1`,
     calls,
     close: () =>
       new Promise((resolveClose, rejectClose) => {
