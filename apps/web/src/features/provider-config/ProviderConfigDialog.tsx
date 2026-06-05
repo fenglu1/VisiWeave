@@ -25,6 +25,7 @@ import {
   type AgentLlmConfigView,
   type AuthStatusResponse,
   type ImageProviderFormat,
+  type LocalOpenAIProviderConfigView,
   type ProviderConfigResponse,
   type ProviderSourceId,
   type ProviderSourceView,
@@ -50,7 +51,6 @@ interface ProviderConfigDialogProps {
 interface LocalProviderFormState {
   apiKey: string;
   baseUrl: string;
-  imageProviderFormat: ImageProviderFormat;
   model: string;
   timeoutMs: string;
 }
@@ -82,9 +82,19 @@ interface VideoProviderFormState {
 
 type DialogMessageTone = "success" | "error";
 type ProviderConfigTab = "image" | "video" | "agent";
+export type ImageAdapterKind = ImageProviderFormat | "gemini";
+export type ImageProviderFormMap = Record<ImageAdapterKind, LocalProviderFormState>;
+export type ImageAdapterConfigView = LocalOpenAIProviderConfigView & { configured?: boolean };
+type ImageProviderPayload = NonNullable<SaveProviderConfigRequest["localOpenAI"]> & {
+  timeoutMs: number;
+};
+type ProviderConfigWithImageConfigs = ProviderConfigResponse & {
+  imageConfigs?: Partial<Record<ImageAdapterKind, ImageAdapterConfigView>>;
+};
 type VideoProviderFormMap = Record<VideoProviderKind, VideoProviderFormState>;
 
 const GROK_IMAGINE_VIDEO_MODEL = "grok-imagine-video";
+const IMAGE_ADAPTER_KINDS = ["newapi", "sub2api", "gemini"] as const;
 
 interface DialogMessage {
   tone: DialogMessageTone;
@@ -94,9 +104,14 @@ interface DialogMessage {
 const emptyLocalProviderForm: LocalProviderFormState = {
   apiKey: "",
   baseUrl: "",
-  imageProviderFormat: "newapi",
   model: "",
   timeoutMs: "1200000"
+};
+
+const emptyImageProviderForms: ImageProviderFormMap = {
+  newapi: { ...emptyLocalProviderForm },
+  sub2api: { ...emptyLocalProviderForm },
+  gemini: { ...emptyLocalProviderForm }
 };
 
 const emptyAgentLlmForm: AgentLlmFormState = {
@@ -147,7 +162,8 @@ export function ProviderConfigDialog({
   const [config, setConfig] = useState<ProviderConfigResponse | null>(null);
   const [agentConfig, setAgentConfig] = useState<AgentLlmConfigView | null>(null);
   const [sourceOrder, setSourceOrder] = useState<ProviderSourceId[]>([...PROVIDER_SOURCE_IDS]);
-  const [localForm, setLocalForm] = useState<LocalProviderFormState>(emptyLocalProviderForm);
+  const [selectedImageAdapterKind, setSelectedImageAdapterKind] = useState<ImageAdapterKind>("newapi");
+  const [imageForms, setImageForms] = useState<ImageProviderFormMap>(emptyImageProviderForms);
   const [agentForm, setAgentForm] = useState<AgentLlmFormState>(emptyAgentLlmForm);
   const [selectedVideoKind, setSelectedVideoKind] = useState<VideoProviderKind>("keyframe-image");
   const [videoForms, setVideoForms] = useState<VideoProviderFormMap>(emptyVideoProviderForms);
@@ -163,8 +179,11 @@ export function ProviderConfigDialog({
   }, [config]);
 
   const activeSourceId = config?.activeSource?.id;
-  const localApiKeyMask = config?.localOpenAI.apiKey.value;
-  const hasSavedLocalKey = Boolean(config?.localOpenAI.apiKey.hasSecret);
+  const imageForm = imageForms[selectedImageAdapterKind];
+  const imageConfigs = config ? imageConfigsFromProviderConfig(config) : undefined;
+  const selectedImageConfig = imageConfigs?.[selectedImageAdapterKind];
+  const localApiKeyMask = selectedImageConfig?.apiKey.value;
+  const hasSavedLocalKey = Boolean(selectedImageConfig?.apiKey.hasSecret);
   const videoForm = videoForms[selectedVideoKind];
   const selectedVideoConfig = config?.videoConfigs[selectedVideoKind];
   const videoApiKeyMask = selectedVideoConfig?.apiKey.value;
@@ -280,13 +299,8 @@ export function ProviderConfigDialog({
   function applyProviderConfig(nextConfig: ProviderConfigResponse): void {
     setConfig(nextConfig);
     setSourceOrder(nextConfig.sourceOrder);
-    setLocalForm({
-      apiKey: "",
-      baseUrl: nextConfig.localOpenAI.baseUrl,
-      imageProviderFormat: nextConfig.localOpenAI.imageProviderFormat,
-      model: nextConfig.localOpenAI.model,
-      timeoutMs: String(nextConfig.localOpenAI.timeoutMs)
-    });
+    setSelectedImageAdapterKind(imageAdapterKindFromValue(nextConfig.localOpenAI.imageProviderFormat));
+    setImageForms(imageFormsFromConfig(nextConfig));
     setSelectedVideoKind(nextConfig.video.kind);
     setVideoForms(videoFormsFromConfig(nextConfig));
   }
@@ -303,10 +317,18 @@ export function ProviderConfigDialog({
   }
 
   function updateLocalForm(patch: Partial<LocalProviderFormState>): void {
-    setLocalForm((current) => ({
+    setImageForms((current) => ({
       ...current,
-      ...patch
+      [selectedImageAdapterKind]: {
+        ...current[selectedImageAdapterKind],
+        ...patch
+      }
     }));
+    setMessage(null);
+  }
+
+  function updateImageAdapterKind(kind: ImageAdapterKind): void {
+    setSelectedImageAdapterKind(kind);
     setMessage(null);
   }
 
@@ -425,7 +447,29 @@ export function ProviderConfigDialog({
       return;
     }
 
-    const timeoutMs = Number.parseInt(localForm.timeoutMs, 10);
+    const localPayload = buildImageProviderPayload(selectedImageAdapterKind, imageForm, selectedImageConfig);
+    if (!localPayload) {
+      setMessage({
+        tone: "error",
+        text: t("providerLocalTimeoutInvalid")
+      });
+      return;
+    }
+
+    const imageProviderBody = buildImageProviderSavePayloadForActiveKind(
+      imageAdapterKindFromValue(config.localOpenAI.imageProviderFormat),
+      imageForms,
+      imageConfigs
+    );
+    if (!imageProviderBody) {
+      setMessage({
+        tone: "error",
+        text: t("providerLocalTimeoutInvalid")
+      });
+      return;
+    }
+
+    const timeoutMs = localPayload.timeoutMs;
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
       setMessage({
         tone: "error",
@@ -472,19 +516,11 @@ export function ProviderConfigDialog({
     setIsSaving(true);
     setMessage(null);
 
-    const apiKey = localForm.apiKey.trim();
     const body: SaveProviderConfigRequest = {
       sourceOrder,
-      localOpenAI: {
-        apiKey,
-        preserveApiKey: !apiKey && hasSavedLocalKey,
-        baseUrl: localForm.baseUrl.trim(),
-        imageProviderFormat: localForm.imageProviderFormat,
-        model: localForm.model.trim(),
-        timeoutMs
-      },
+      ...imageProviderBody,
       video: videoPayload
-    };
+    } as SaveProviderConfigRequest;
     const agentBody: SaveAgentLlmConfigRequest | null = shouldPersistAgentConfig
       ? {
           apiKey: agentApiKey,
@@ -552,6 +588,57 @@ export function ProviderConfigDialog({
     }
 
     updateVideoKind(kind);
+  }
+
+  async function enableImageAdapter(kind: ImageAdapterKind): Promise<void> {
+    if (isSaving) {
+      return;
+    }
+
+    const imageProviderBody = buildImageProviderSavePayloadForActiveKind(kind, imageForms, imageConfigs);
+    if (!imageProviderBody) {
+      setMessage({
+        tone: "error",
+        text: t("providerLocalTimeoutInvalid")
+      });
+      return;
+    }
+
+    setSelectedImageAdapterKind(kind);
+    setIsSaving(true);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/provider-config", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sourceOrder,
+          ...imageProviderBody
+        } satisfies SaveProviderConfigRequest)
+      });
+      if (!response.ok) {
+        throw new Error(await readProviderConfigError(response, locale, t));
+      }
+
+      const savedConfig = (await response.json()) as ProviderConfigResponse;
+      applyProviderConfig(savedConfig);
+      window.dispatchEvent(new Event(PROVIDER_CONFIG_SAVED_EVENT));
+      await onRefreshAuthStatus();
+      setMessage({
+        tone: "success",
+        text: t("providerImageAdapterEnabled", { provider: imageAdapterLabel(kind, t) })
+      });
+    } catch (error) {
+      setMessage({
+        tone: "error",
+        text: error instanceof Error ? error.message : t("providerConfigSaveFailed")
+      });
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   async function handleLogoutCodex(): Promise<void> {
@@ -694,6 +781,40 @@ export function ProviderConfigDialog({
                 <div className="provider-workspace__main">
                   <section className="provider-detail-card provider-detail-card--local" data-testid="provider-local-section" aria-labelledby="provider-local-title">
                     <ProviderDetailHeader description={t("providerCardLocalHint")} source={localSource} sourceId="local-openai" titleId="provider-local-title" />
+                    <div className="provider-image-adapter-grid" aria-label={t("providerImageAdapterKind")} role="list">
+                      {IMAGE_ADAPTER_KINDS.map((kind) => {
+                        const adapterConfig = imageConfigs?.[kind];
+                        const adapterForm = imageForms[kind];
+                        const isSelected = selectedImageAdapterKind === kind;
+                        const isSavedActive = config?.localOpenAI.imageProviderFormat === kind;
+                        const isAvailable = adapterConfigured(adapterConfig, adapterForm);
+                        return (
+                          <article className="provider-image-adapter-card" data-active={isSavedActive} data-selected={isSelected} key={kind} role="listitem">
+                            <button
+                              aria-pressed={isSelected}
+                              className="provider-image-adapter-card__select"
+                              data-testid={`provider-image-adapter-${kind}`}
+                              type="button"
+                              onClick={() => updateImageAdapterKind(kind)}
+                            >
+                              <span className="provider-image-adapter-card__title">{imageAdapterLabel(kind, t)}</span>
+                              <span className="provider-image-adapter-card__meta">
+                                {isAvailable ? t("providerAvailable") : t("providerUnavailable")}
+                              </span>
+                            </button>
+                            <button
+                              className="provider-image-adapter-card__action"
+                              data-testid={`provider-image-adapter-enable-${kind}`}
+                              disabled={isSaving || isSavedActive}
+                              type="button"
+                              onClick={() => void enableImageAdapter(kind)}
+                            >
+                              {isSavedActive ? t("providerImageAdapterInUse") : t("providerImageAdapterEnable")}
+                            </button>
+                          </article>
+                        );
+                      })}
+                    </div>
                     <div className="provider-form-grid">
                       <label className="provider-field provider-field--span">
                         <span>API Key</span>
@@ -704,7 +825,7 @@ export function ProviderConfigDialog({
                           name="localOpenAIKey"
                           placeholder={localApiKeyMask ? t("providerLocalApiKeySaved", { mask: localApiKeyMask }) : t("providerLocalApiKeyPlaceholder")}
                           type="password"
-                          value={localForm.apiKey}
+                          value={imageForm.apiKey}
                           onChange={(event) => updateLocalForm({ apiKey: event.target.value })}
                         />
                       </label>
@@ -715,30 +836,17 @@ export function ProviderConfigDialog({
                           data-testid="provider-local-base-url"
                           name="localOpenAIBaseUrl"
                           placeholder={t("providerBaseUrlPlaceholder")}
-                          value={localForm.baseUrl}
+                          value={imageForm.baseUrl}
                           onChange={(event) => updateLocalForm({ baseUrl: event.target.value })}
                         />
                       </label>
-                      <label className="provider-field">
-                        <span>{t("providerImageFormat")}</span>
-                        <select
-                          className="provider-field__control"
-                          data-testid="provider-local-image-format"
-                          name="localOpenAIImageProviderFormat"
-                          value={localForm.imageProviderFormat}
-                          onChange={(event) => updateLocalForm({ imageProviderFormat: event.target.value as ImageProviderFormat })}
-                        >
-                          <option value="newapi">{t("providerImageFormatNewApi")}</option>
-                          <option value="sub2api">{t("providerImageFormatSub2Api")}</option>
-                        </select>
-                      </label>
-                      <label className="provider-field">
+                      <label className="provider-field provider-field--span">
                         <span>{t("providerFieldModel")}</span>
                         <input
                           className="provider-field__control"
                           data-testid="provider-local-model"
                           name="localOpenAIModel"
-                          value={localForm.model}
+                          value={imageForm.model}
                           onChange={(event) => updateLocalForm({ model: event.target.value })}
                         />
                       </label>
@@ -750,12 +858,12 @@ export function ProviderConfigDialog({
                           min={1}
                           name="localOpenAITimeout"
                           type="number"
-                          value={localForm.timeoutMs}
+                          value={imageForm.timeoutMs}
                           onChange={(event) => updateLocalForm({ timeoutMs: event.target.value })}
                         />
                       </label>
                     </div>
-                    {hasSavedLocalKey && !localForm.apiKey ? (
+                    {hasSavedLocalKey && !imageForm.apiKey ? (
                       <div className="provider-secret-pill">
                         <KeyRound className="size-3.5 shrink-0" aria-hidden="true" />
                         {t("providerLocalApiKeySaved", { mask: localApiKeyMask ?? "" })}
@@ -1401,6 +1509,105 @@ function videoKindLabel(kind: VideoProviderKind, t: Translate): string {
   }
 
   return kind === "custom-http" ? t("providerVideoKindCustomHttp") : t("providerVideoKindKeyframe");
+}
+
+function imageAdapterLabel(kind: ImageAdapterKind, t: Translate): string {
+  if (kind === "gemini") {
+    return t("providerImageFormatGemini");
+  }
+
+  return kind === "sub2api" ? t("providerImageFormatSub2Api") : t("providerImageFormatNewApi");
+}
+
+function imageAdapterKindFromValue(value: string): ImageAdapterKind {
+  return value === "sub2api" || value === "gemini" ? value : "newapi";
+}
+
+function imageConfigsFromProviderConfig(config: ProviderConfigResponse): Partial<Record<ImageAdapterKind, ImageAdapterConfigView>> {
+  const nextConfig = config as ProviderConfigWithImageConfigs;
+  return nextConfig.imageConfigs ?? {
+    [imageAdapterKindFromValue(config.localOpenAI.imageProviderFormat)]: config.localOpenAI
+  };
+}
+
+function imageFormsFromConfig(config: ProviderConfigResponse): ImageProviderFormMap {
+  const imageConfigs = imageConfigsFromProviderConfig(config);
+  return IMAGE_ADAPTER_KINDS.reduce<ImageProviderFormMap>((forms, kind) => {
+    forms[kind] = imageFormFromConfig(imageConfigs[kind], kind);
+    return forms;
+  }, { ...emptyImageProviderForms });
+}
+
+function imageFormFromConfig(config: ImageAdapterConfigView | undefined, kind: ImageAdapterKind): LocalProviderFormState {
+  return {
+    apiKey: "",
+    baseUrl: config?.baseUrl ?? "",
+    model: config?.model ?? "",
+    timeoutMs: String(config?.timeoutMs ?? emptyLocalProviderForm.timeoutMs)
+  };
+}
+
+export function adapterConfigured(config: ImageAdapterConfigView | undefined, form: LocalProviderFormState): boolean {
+  return Boolean(form.apiKey.trim() || config?.configured || config?.apiKey.hasSecret);
+}
+
+function buildImageProviderPayload(
+  kind: ImageAdapterKind,
+  form: LocalProviderFormState,
+  savedConfig: ImageAdapterConfigView | undefined
+): ImageProviderPayload | null {
+  const timeoutMs = Number.parseInt(form.timeoutMs, 10);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    return null;
+  }
+
+  const apiKey = form.apiKey.trim();
+  return {
+    apiKey,
+    preserveApiKey: !apiKey && Boolean(savedConfig?.apiKey.hasSecret),
+    baseUrl: form.baseUrl.trim(),
+    imageProviderFormat: kind as ImageProviderFormat,
+    model: form.model.trim(),
+    timeoutMs
+  };
+}
+
+function buildImageConfigsPayload(
+  forms: ImageProviderFormMap,
+  savedConfigs: Partial<Record<ImageAdapterKind, ImageAdapterConfigView>> | undefined
+): Partial<Record<ImageAdapterKind, ImageProviderPayload>> | null {
+  const payload: Partial<Record<ImageAdapterKind, ImageProviderPayload>> = {};
+  for (const kind of IMAGE_ADAPTER_KINDS) {
+    const imagePayload = buildImageProviderPayload(kind, forms[kind], savedConfigs?.[kind]);
+    if (!imagePayload) {
+      return null;
+    }
+
+    payload[kind] = imagePayload;
+  }
+
+  return payload;
+}
+
+export function buildImageProviderSavePayloadForActiveKind(
+  activeKind: ImageAdapterKind,
+  forms: ImageProviderFormMap,
+  savedConfigs: Partial<Record<ImageAdapterKind, ImageAdapterConfigView>> | undefined
+): Pick<SaveProviderConfigRequest, "imageConfigs" | "localOpenAI"> | null {
+  const imageConfigsPayload = buildImageConfigsPayload(forms, savedConfigs);
+  if (!imageConfigsPayload) {
+    return null;
+  }
+
+  const activeImageConfigPayload = imageConfigsPayload[activeKind];
+  if (!activeImageConfigPayload) {
+    return null;
+  }
+
+  return {
+    imageConfigs: imageConfigsPayload,
+    localOpenAI: activeImageConfigPayload
+  };
 }
 
 function videoFormsFromConfig(config: ProviderConfigResponse): VideoProviderFormMap {

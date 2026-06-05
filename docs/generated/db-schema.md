@@ -58,7 +58,7 @@ Stores optional Tencent Cloud COS backup configuration.
 
 ## `provider_configs`
 
-Stores image provider source order, local OpenAI-compatible settings, and the currently selected video provider kind. Legacy `video_*` columns are retained as migration input for `video_provider_configs`.
+Stores provider source order plus the currently selected local image and video provider kinds. Legacy `local_*` and `video_*` columns are retained as migration input for `image_provider_configs` and `video_provider_configs`.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -66,9 +66,10 @@ Stores image provider source order, local OpenAI-compatible settings, and the cu
 | `source_order_json` | text | Required serialized provider source order. |
 | `local_api_key` | text | Optional local API key. |
 | `local_base_url` | text | Optional OpenAI-compatible base URL. |
-| `local_image_provider_format` | text | Optional local image provider format (`newapi` or `sub2api`). |
+| `local_image_provider_format` | text | Optional legacy local image provider format (`newapi`, `sub2api`, or `gemini`). |
 | `local_model` | text | Optional image model. |
 | `local_timeout_ms` | integer | Optional image timeout in milliseconds. |
+| `image_provider_kind` | text | Optional active local image provider kind. |
 | `video_kind` | text | Optional video provider kind. |
 | `video_api_key` | text | Optional video provider API key. |
 | `video_base_url` | text | Optional video provider base URL. |
@@ -83,6 +84,20 @@ Stores image provider source order, local OpenAI-compatible settings, and the cu
 | `video_height` | integer | Optional generated video height. |
 | `video_fps` | integer | Optional generated video frame rate. |
 | `video_interpolation` | text | Optional local keyframe video interpolation mode. |
+| `created_at` | text | Required ISO timestamp. |
+| `updated_at` | text | Required ISO timestamp. |
+
+## `image_provider_configs`
+
+Stores independent local settings for each image provider kind.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `kind` | text | Primary key image provider kind (`newapi`, `sub2api`, or `gemini`). |
+| `api_key` | text | Optional image provider API key. |
+| `base_url` | text | Optional image provider base URL. |
+| `model` | text | Optional image model. |
+| `timeout_ms` | integer | Optional image provider timeout in milliseconds. |
 | `created_at` | text | Required ISO timestamp. |
 | `updated_at` | text | Required ISO timestamp. |
 

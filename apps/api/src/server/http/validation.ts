@@ -554,11 +554,23 @@ export function parseProviderConfigPayload(input: unknown): ParseResult<SaveProv
     return video;
   }
 
+  const image = input.image === undefined ? undefined : parseLocalOpenAIProviderConfig(input.image);
+  if (image && !image.ok) {
+    return image;
+  }
+
+  const imageConfigs = input.imageConfigs === undefined ? undefined : parseImageProviderConfigs(input.imageConfigs);
+  if (imageConfigs && !imageConfigs.ok) {
+    return imageConfigs;
+  }
+
   if (input.localOpenAI === undefined) {
     return {
       ok: true,
       value: {
         sourceOrder: sourceOrder.value,
+        image: image?.value,
+        imageConfigs: imageConfigs?.value,
         video: video?.value
       }
     };
@@ -574,8 +586,46 @@ export function parseProviderConfigPayload(input: unknown): ParseResult<SaveProv
     value: {
       sourceOrder: sourceOrder.value,
       localOpenAI: localOpenAI.value,
+      image: image?.value,
+      imageConfigs: imageConfigs?.value,
       video: video?.value
     }
+  };
+}
+
+function parseImageProviderConfigs(input: unknown): ParseResult<Partial<Record<ImageProviderFormat, SaveLocalOpenAIProviderConfig>>> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Image provider configs must be a JSON object.")
+    };
+  }
+
+  const configs: Partial<Record<ImageProviderFormat, SaveLocalOpenAIProviderConfig>> = {};
+  for (const [rawKind, rawConfig] of Object.entries(input)) {
+    const kind = parseImageProviderFormat(rawKind);
+    if (!kind) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Image provider config key must be newapi, sub2api, or gemini.")
+      };
+    }
+
+    const parsedConfig = parseLocalOpenAIProviderConfig(rawConfig);
+    if (!parsedConfig.ok) {
+      return parsedConfig;
+    }
+
+    configs[kind] = {
+      ...parsedConfig.value,
+      kind,
+      imageProviderFormat: kind
+    };
+  }
+
+  return {
+    ok: true,
+    value: configs
   };
 }
 
@@ -640,10 +690,21 @@ function parseLocalOpenAIProviderConfig(input: unknown): ParseResult<SaveLocalOp
     if (!imageProviderFormat) {
       return {
         ok: false,
-        error: errorResponse("invalid_provider_config", "Custom OpenAI image provider format must be newapi or sub2api.")
+        error: errorResponse("invalid_provider_config", "Custom image provider format must be newapi, sub2api, or gemini.")
       };
     }
     config.imageProviderFormat = imageProviderFormat;
+  }
+
+  if (Object.hasOwn(input, "kind")) {
+    const kind = parseImageProviderFormat(input.kind);
+    if (!kind) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Custom image provider kind must be newapi, sub2api, or gemini.")
+      };
+    }
+    config.kind = kind;
   }
 
   if (Object.hasOwn(input, "model")) {

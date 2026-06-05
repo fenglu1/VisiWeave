@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "smoke:provider-config-dialog": "pnpm --filter @gpt-image-canvas/api exec tsx ../web/src/smoke/provider-config-dialog-smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

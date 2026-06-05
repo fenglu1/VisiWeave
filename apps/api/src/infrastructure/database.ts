@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   local_image_provider_format TEXT,
   local_model TEXT,
   local_timeout_ms INTEGER,
+  image_provider_kind TEXT,
   video_kind TEXT,
   video_api_key TEXT,
   video_base_url TEXT,
@@ -101,6 +102,16 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   video_height INTEGER,
   video_fps INTEGER,
   video_interpolation TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS image_provider_configs (
+  kind TEXT PRIMARY KEY NOT NULL,
+  api_key TEXT,
+  base_url TEXT,
+  model TEXT,
+  timeout_ms INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -248,6 +259,7 @@ ensureColumn("provider_configs", "local_base_url", "local_base_url TEXT");
 ensureColumn("provider_configs", "local_image_provider_format", "local_image_provider_format TEXT");
 ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
+ensureColumn("provider_configs", "image_provider_kind", "image_provider_kind TEXT");
 ensureColumn("provider_configs", "video_kind", "video_kind TEXT");
 ensureColumn("provider_configs", "video_api_key", "video_api_key TEXT");
 ensureColumn("provider_configs", "video_base_url", "video_base_url TEXT");
@@ -275,6 +287,7 @@ ensureColumn("video_generation_outputs", "provider_job_id", "provider_job_id TEX
 backfillGenerationReferenceAssets();
 backfillVideoGenerationProgress();
 ensureProviderConfigRow();
+backfillImageProviderConfigs();
 backfillVideoProviderConfigs();
 ensureAgentLlmConfigRow();
 
@@ -346,6 +359,58 @@ function ensureProviderConfigRow(): void {
        VALUES (?, ?, ?, ?)`
     )
     .run("active", JSON.stringify(["env-openai", "local-openai", "codex"]), now, now);
+}
+
+function backfillImageProviderConfigs(): void {
+  sqlite.exec(`
+    INSERT OR IGNORE INTO image_provider_configs (
+      kind,
+      api_key,
+      base_url,
+      model,
+      timeout_ms,
+      created_at,
+      updated_at
+    )
+    SELECT
+      CASE
+        WHEN local_image_provider_format IN ('newapi', 'sub2api', 'gemini') THEN local_image_provider_format
+        ELSE 'newapi'
+      END,
+      local_api_key,
+      local_base_url,
+      local_model,
+      local_timeout_ms,
+      created_at,
+      updated_at
+    FROM provider_configs
+    WHERE id = 'active'
+      AND (
+        local_api_key IS NOT NULL
+        OR local_base_url IS NOT NULL
+        OR local_image_provider_format IS NOT NULL
+        OR local_model IS NOT NULL
+        OR local_timeout_ms IS NOT NULL
+      )
+  `);
+
+  sqlite.exec(`
+    UPDATE provider_configs
+    SET
+      image_provider_kind = CASE
+        WHEN local_image_provider_format IN ('newapi', 'sub2api', 'gemini') THEN local_image_provider_format
+        ELSE 'newapi'
+      END
+    WHERE id = 'active'
+      AND image_provider_kind IS NULL
+      AND (
+        local_api_key IS NOT NULL
+        OR local_base_url IS NOT NULL
+        OR local_image_provider_format IS NOT NULL
+        OR local_model IS NOT NULL
+        OR local_timeout_ms IS NOT NULL
+      )
+  `);
 }
 
 function backfillVideoProviderConfigs(): void {

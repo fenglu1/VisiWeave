@@ -12,7 +12,7 @@ export type VideoGenerationProgressStage =
   | "generating_keyframes"
   | "composing_video";
 
-export const VIDEO_DURATION_PRESETS = [5, 10, 20, 30] as const;
+export const VIDEO_DURATION_PRESETS = [5, 10, 15, 20, 30] as const;
 export type VideoDurationPreset = (typeof VIDEO_DURATION_PRESETS)[number];
 export const DEFAULT_VIDEO_DURATION_SECONDS = 10 as const;
 

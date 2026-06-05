@@ -1,5 +1,5 @@
 export type RuntimeImageProvider = "openai" | "codex" | "none";
-export const IMAGE_PROVIDER_FORMATS = ["newapi", "sub2api"] as const;
+export const IMAGE_PROVIDER_FORMATS = ["newapi", "sub2api", "gemini"] as const;
 export type ImageProviderFormat = (typeof IMAGE_PROVIDER_FORMATS)[number];
 export const VIDEO_PROVIDER_KINDS = ["keyframe-image", "custom-http", "grok-imagine"] as const;
 export type VideoProviderKind = (typeof VIDEO_PROVIDER_KINDS)[number];
@@ -51,12 +51,23 @@ export interface ProviderSourceSummary {
 }
 
 export interface LocalOpenAIProviderConfigView {
+  kind?: ImageProviderFormat;
   apiKey: MaskedSecret;
   baseUrl: string;
   imageProviderFormat: ImageProviderFormat;
   model: string;
   timeoutMs: number;
+  configured?: boolean;
+  source?: "local";
 }
+
+export type ImageProviderConfigView = LocalOpenAIProviderConfigView & {
+  kind: ImageProviderFormat;
+  configured: boolean;
+  source: "local";
+};
+
+export type ImageProviderConfigMap = Record<ImageProviderFormat, ImageProviderConfigView>;
 
 export interface VideoProviderConfigView {
   kind: VideoProviderKind;
@@ -85,12 +96,15 @@ export interface ProviderConfigResponse {
   sourceOrder: ProviderSourceId[];
   sources: ProviderSourceView[];
   localOpenAI: LocalOpenAIProviderConfigView;
+  image: ImageProviderConfigView;
+  imageConfigs: ImageProviderConfigMap;
   video: VideoProviderConfigView;
   videoConfigs: VideoProviderConfigMap;
   activeSource?: ProviderSourceSummary;
 }
 
 export interface SaveLocalOpenAIProviderConfig {
+  kind?: ImageProviderFormat;
   apiKey?: string;
   preserveApiKey?: boolean;
   baseUrl?: string;
@@ -102,6 +116,8 @@ export interface SaveLocalOpenAIProviderConfig {
 export interface SaveProviderConfigRequest {
   sourceOrder: ProviderSourceId[];
   localOpenAI?: SaveLocalOpenAIProviderConfig;
+  image?: SaveLocalOpenAIProviderConfig;
+  imageConfigs?: Partial<Record<ImageProviderFormat, SaveLocalOpenAIProviderConfig>>;
   video?: SaveVideoProviderConfig;
 }
 

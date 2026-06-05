@@ -49,6 +49,7 @@ export const providerConfigs = sqliteTable("provider_configs", {
   localImageProviderFormat: text("local_image_provider_format"),
   localModel: text("local_model"),
   localTimeoutMs: integer("local_timeout_ms"),
+  imageProviderKind: text("image_provider_kind"),
   videoKind: text("video_kind"),
   videoApiKey: text("video_api_key"),
   videoBaseUrl: text("video_base_url"),
@@ -63,6 +64,16 @@ export const providerConfigs = sqliteTable("provider_configs", {
   videoHeight: integer("video_height"),
   videoFps: integer("video_fps"),
   videoInterpolation: text("video_interpolation"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const imageProviderConfigs = sqliteTable("image_provider_configs", {
+  kind: text("kind").primaryKey(),
+  apiKey: text("api_key"),
+  baseUrl: text("base_url"),
+  model: text("model"),
+  timeoutMs: integer("timeout_ms"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 });

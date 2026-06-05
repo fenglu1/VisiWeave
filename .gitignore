@@ -1,6 +1,7 @@
 node_modules/
 .codex-temp/
 .superpowers/
+docs/superpowers/
 .env
 .env.*
 !.env.example

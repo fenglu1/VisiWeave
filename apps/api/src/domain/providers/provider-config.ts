@@ -27,10 +27,16 @@ import {
   parseOpenAIImageTimeoutMs,
   type OpenAIImageProviderConfig
 } from "../../infrastructure/providers/image-provider.js";
-import { codexOAuthTokens, providerConfigs, videoProviderConfigs } from "../../infrastructure/schema.js";
+import { codexOAuthTokens, imageProviderConfigs, providerConfigs, videoProviderConfigs } from "../../infrastructure/schema.js";
 
 const ACTIVE_PROVIDER_CONFIG_ID = "active";
 const CODEX_TOKEN_ROW_ID = "default";
+const DEFAULT_IMAGE_PROVIDER_KIND: ImageProviderFormat = "newapi";
+const DEFAULT_IMAGE_PROVIDER_MODELS: Record<ImageProviderFormat, string> = {
+  newapi: IMAGE_MODEL,
+  sub2api: IMAGE_MODEL,
+  gemini: "gemini-2.5-flash-image"
+};
 const DEFAULT_VIDEO_PROVIDER_KIND: VideoProviderKind = "keyframe-image";
 const DEFAULT_VIDEO_PROVIDER_MODEL = "grok-imagine-video";
 const DEFAULT_VIDEO_PROVIDER_TIMEOUT_MS = 20 * 60 * 1000;
@@ -43,16 +49,24 @@ const DEFAULT_KEYFRAME_VIDEO_INTERPOLATION = "ffmpeg";
 export const DEFAULT_PROVIDER_SOURCE_ORDER: ProviderSourceId[] = ["env-openai", "local-openai", "codex"];
 
 type ProviderConfigRow = typeof providerConfigs.$inferSelect;
+type ImageProviderConfigRow = typeof imageProviderConfigs.$inferSelect;
 type VideoProviderConfigRow = typeof videoProviderConfigs.$inferSelect;
 type CodexTokenRow = typeof codexOAuthTokens.$inferSelect;
+type ImageProviderConfigRowsByKind = Partial<Record<ImageProviderFormat, ImageProviderConfigRow>>;
 type VideoProviderConfigRowsByKind = Partial<Record<VideoProviderKind, VideoProviderConfigRow>>;
 
-interface ResolvedLocalConfig {
-  localApiKey: string | null;
-  localBaseUrl: string | null;
-  localImageProviderFormat: ImageProviderFormat | null;
-  localModel: string | null;
-  localTimeoutMs: number | null;
+interface ImageProviderConfigViewForKind extends LocalOpenAIProviderConfigView {
+  kind: ImageProviderFormat;
+  configured: boolean;
+  source: "local";
+}
+
+interface ResolvedImageProviderConfig {
+  kind: ImageProviderFormat;
+  apiKey: string | null;
+  baseUrl: string | null;
+  model: string | null;
+  timeoutMs: number | null;
 }
 
 export interface LocalVideoProviderConfig {
@@ -91,16 +105,20 @@ interface ResolvedVideoProviderConfig {
 
 export function getProviderConfig(): ProviderConfigResponse {
   const row = getProviderConfigRow();
+  const imageRows = getImageProviderConfigRowsByKind();
   const videoRows = getVideoProviderConfigRowsByKind();
   const sourceOrder = readSavedSourceOrder(row?.sourceOrderJson);
-  const sourcesById = new Map(providerSources(row).map((source) => [source.id, source]));
+  const sourcesById = new Map(providerSources(row, imageRows).map((source) => [source.id, source]));
   const sources = sourceOrder.map((sourceId) => sourcesById.get(sourceId)).filter(isDefined);
   const activeSource = sources.find((source) => source.available);
+  const image = imageProviderConfigView(row, imageRows);
 
   return {
     sourceOrder,
     sources,
-    localOpenAI: localOpenAIConfigView(row),
+    localOpenAI: image,
+    image,
+    imageConfigs: imageProviderConfigViews(row, imageRows),
     video: videoProviderConfigView(row, videoRows),
     videoConfigs: videoProviderConfigViews(videoRows),
     activeSource: activeSource ? providerSourceSummary(activeSource) : undefined
@@ -114,19 +132,27 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
 
   const now = new Date().toISOString();
   const existing = getProviderConfigRow();
+  const existingImageRows = getImageProviderConfigRowsByKind();
   const existingVideoRows = getVideoProviderConfigRowsByKind();
-  const local = resolveLocalConfigForSave(input.localOpenAI, existing);
+  const imageInput = input.image ?? input.localOpenAI;
+  const activeImageKind = imageInput ? imageProviderKindForSave(imageInput, existing) : activeImageProviderKind(existing);
+  const imageConfigs = resolveImageProviderConfigsForSave(input.imageConfigs, existingImageRows, existing);
+  const pendingActiveImageConfig = imageConfigs.find((config) => config.kind === activeImageKind);
+  const activeImage = imageInput
+    ? resolveImageProviderConfigForSave(imageInput, activeImageKind, pendingActiveImageConfig ?? existingImageRows[activeImageKind], existing)
+    : imageConfigs.find((config) => config.kind === activeImageKind);
   const activeVideoKind = input.video
     ? (parseVideoProviderKind(input.video.kind) ?? parseVideoProviderKind(existing?.videoKind) ?? DEFAULT_VIDEO_PROVIDER_KIND)
     : parseVideoProviderKind(existing?.videoKind);
   const row: ProviderConfigRow = {
     id: ACTIVE_PROVIDER_CONFIG_ID,
     sourceOrderJson: JSON.stringify(input.sourceOrder),
-    localApiKey: local.localApiKey,
-    localBaseUrl: local.localBaseUrl,
-    localImageProviderFormat: local.localImageProviderFormat,
-    localModel: local.localModel,
-    localTimeoutMs: local.localTimeoutMs,
+    localApiKey: activeImage ? activeImage.apiKey : (existing?.localApiKey ?? null),
+    localBaseUrl: activeImage ? activeImage.baseUrl : (existing?.localBaseUrl ?? null),
+    localImageProviderFormat: activeImage ? activeImage.kind : (existing?.localImageProviderFormat ?? null),
+    localModel: activeImage ? activeImage.model : (existing?.localModel ?? null),
+    localTimeoutMs: activeImage ? activeImage.timeoutMs : (existing?.localTimeoutMs ?? null),
+    imageProviderKind: activeImageKind,
     videoKind: activeVideoKind ?? null,
     videoApiKey: existing?.videoApiKey ?? null,
     videoBaseUrl: existing?.videoBaseUrl ?? null,
@@ -156,6 +182,7 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
         localImageProviderFormat: row.localImageProviderFormat,
         localModel: row.localModel,
         localTimeoutMs: row.localTimeoutMs,
+        imageProviderKind: row.imageProviderKind,
         videoKind: row.videoKind,
         videoApiKey: row.videoApiKey,
         videoBaseUrl: row.videoBaseUrl,
@@ -174,6 +201,10 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
       }
     })
     .run();
+
+  for (const imageConfig of dedupeImageProviderConfigs([...imageConfigs, ...(activeImage ? [activeImage] : [])])) {
+    saveImageProviderConfigForKind(imageConfig, now);
+  }
 
   if (input.video) {
     const videoKindForSave = activeVideoKind ?? DEFAULT_VIDEO_PROVIDER_KIND;
@@ -208,17 +239,20 @@ export function getEnvironmentOpenAIImageProviderConfig(): OpenAIImageProviderCo
 
 export function getLocalOpenAIImageProviderConfig(): OpenAIImageProviderConfig | undefined {
   const row = getProviderConfigRow();
-  const apiKey = trimToUndefined(row?.localApiKey);
+  const imageRows = getImageProviderConfigRowsByKind();
+  const kind = activeImageProviderKind(row);
+  const imageRow = imageProviderConfigRowForKind(kind, row, imageRows);
+  const apiKey = trimToUndefined(imageRow.apiKey);
   if (!apiKey) {
     return undefined;
   }
 
   return {
     apiKey,
-    baseURL: trimToUndefined(row?.localBaseUrl),
-    imageProviderFormat: parseImageProviderFormat(row?.localImageProviderFormat) ?? "newapi",
-    model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
-    timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+    baseURL: trimToUndefined(imageRow.baseUrl),
+    imageProviderFormat: kind,
+    model: trimToUndefined(imageRow.model) ?? defaultImageModel(kind),
+    timeoutMs: validTimeoutMs(imageRow.timeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
   };
 }
 
@@ -262,6 +296,20 @@ function getProviderConfigRow(): ProviderConfigRow | undefined {
   return db.select().from(providerConfigs).where(eq(providerConfigs.id, ACTIVE_PROVIDER_CONFIG_ID)).get();
 }
 
+function getImageProviderConfigRowsByKind(): ImageProviderConfigRowsByKind {
+  const rows = db.select().from(imageProviderConfigs).all();
+  const byKind: ImageProviderConfigRowsByKind = {};
+
+  for (const row of rows) {
+    const kind = parseImageProviderFormat(row.kind);
+    if (kind) {
+      byKind[kind] = row;
+    }
+  }
+
+  return byKind;
+}
+
 function getVideoProviderConfigRowsByKind(): VideoProviderConfigRowsByKind {
   const rows = db.select().from(videoProviderConfigs).all();
   const byKind: VideoProviderConfigRowsByKind = {};
@@ -276,9 +324,9 @@ function getVideoProviderConfigRowsByKind(): VideoProviderConfigRowsByKind {
   return byKind;
 }
 
-function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView[] {
+function providerSources(row: ProviderConfigRow | undefined, imageRows: ImageProviderConfigRowsByKind): ProviderSourceView[] {
   const envConfig = getEnvironmentOpenAIImageProviderConfig();
-  const localConfig = getLocalOpenAIImageProviderConfig();
+  const localConfig = imageProviderConfigView(row, imageRows);
   const codex = codexSessionView(getCodexTokenRow());
 
   return [
@@ -300,15 +348,15 @@ function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView
       id: "local-openai",
       kind: "local",
       label: "Custom OpenAI-compatible API",
-      available: Boolean(localConfig),
-      status: localConfig ? "available" : "missing_api_key",
+      available: localConfig.configured,
+      status: localConfig.configured ? "available" : "missing_api_key",
       details: {
-        baseUrl: row?.localBaseUrl ?? "",
-        imageProviderFormat: parseImageProviderFormat(row?.localImageProviderFormat) ?? "newapi",
-        model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
-        timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+        baseUrl: localConfig.baseUrl,
+        imageProviderFormat: localConfig.imageProviderFormat,
+        model: localConfig.model,
+        timeoutMs: localConfig.timeoutMs
       },
-      secret: maskedSecret(row?.localApiKey)
+      secret: localConfig.apiKey
     },
     {
       id: "codex",
@@ -326,14 +374,79 @@ function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView
   ];
 }
 
-function localOpenAIConfigView(row: ProviderConfigRow | undefined): LocalOpenAIProviderConfigView {
+function imageProviderConfigView(
+  row: ProviderConfigRow | undefined,
+  imageRows: ImageProviderConfigRowsByKind
+): ImageProviderConfigViewForKind {
+  const kind = activeImageProviderKind(row);
+  return imageProviderConfigViewForKind(kind, row, imageRows);
+}
+
+function imageProviderConfigViews(
+  row: ProviderConfigRow | undefined,
+  imageRows: ImageProviderConfigRowsByKind
+): Record<ImageProviderFormat, ImageProviderConfigViewForKind> {
   return {
-    apiKey: maskedSecret(row?.localApiKey),
-    baseUrl: row?.localBaseUrl ?? "",
-    imageProviderFormat: parseImageProviderFormat(row?.localImageProviderFormat) ?? "newapi",
-    model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
-    timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+    newapi: imageProviderConfigViewForKind("newapi", row, imageRows),
+    sub2api: imageProviderConfigViewForKind("sub2api", row, imageRows),
+    gemini: imageProviderConfigViewForKind("gemini", row, imageRows)
   };
+}
+
+function imageProviderConfigViewForKind(
+  kind: ImageProviderFormat,
+  providerRow: ProviderConfigRow | undefined,
+  imageRows: ImageProviderConfigRowsByKind
+): ImageProviderConfigViewForKind {
+  const row = imageProviderConfigRowForKind(kind, providerRow, imageRows);
+  const apiKey = row.apiKey?.trim() || "";
+  return {
+    kind,
+    apiKey: maskedSecret(apiKey),
+    baseUrl: row.baseUrl?.trim() || "",
+    imageProviderFormat: kind,
+    model: row.model?.trim() || defaultImageModel(kind),
+    timeoutMs: validTimeoutMs(row.timeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS,
+    configured: Boolean(apiKey),
+    source: "local"
+  };
+}
+
+function activeImageProviderKind(row: ProviderConfigRow | undefined): ImageProviderFormat {
+  return parseImageProviderFormat(row?.imageProviderKind) ?? parseImageProviderFormat(row?.localImageProviderFormat) ?? DEFAULT_IMAGE_PROVIDER_KIND;
+}
+
+function imageProviderConfigRowForKind(
+  kind: ImageProviderFormat,
+  providerRow: ProviderConfigRow | undefined,
+  imageRows: ImageProviderConfigRowsByKind
+): Pick<ImageProviderConfigRow, "apiKey" | "baseUrl" | "model" | "timeoutMs"> {
+  return imageRows[kind] ?? legacyImageProviderConfigRowForKind(kind, providerRow);
+}
+
+function legacyImageProviderConfigRowForKind(
+  kind: ImageProviderFormat,
+  row: ProviderConfigRow | undefined
+): Pick<ImageProviderConfigRow, "apiKey" | "baseUrl" | "model" | "timeoutMs"> {
+  if (kind !== activeImageProviderKind(row)) {
+    return {
+      apiKey: null,
+      baseUrl: null,
+      model: null,
+      timeoutMs: null
+    };
+  }
+
+  return {
+    apiKey: row?.localApiKey ?? null,
+    baseUrl: row?.localBaseUrl ?? null,
+    model: row?.localModel ?? null,
+    timeoutMs: row?.localTimeoutMs ?? null
+  };
+}
+
+function defaultImageModel(kind: ImageProviderFormat): string {
+  return DEFAULT_IMAGE_PROVIDER_MODELS[kind];
 }
 
 function videoProviderConfigView(
@@ -467,44 +580,106 @@ function runtimeProviderForSource(sourceId: ProviderSourceId): RuntimeImageProvi
   return "openai";
 }
 
-function resolveLocalConfigForSave(
-  input: SaveLocalOpenAIProviderConfig | undefined,
-  existing: ProviderConfigRow | undefined
-): ResolvedLocalConfig {
-  if (!input) {
-    return {
-      localApiKey: existing?.localApiKey ?? null,
-      localBaseUrl: existing?.localBaseUrl ?? null,
-      localImageProviderFormat: parseImageProviderFormat(existing?.localImageProviderFormat) ?? null,
-      localModel: existing?.localModel ?? null,
-      localTimeoutMs: existing?.localTimeoutMs ?? null
-    };
+function imageProviderKindForSave(input: SaveLocalOpenAIProviderConfig, existing: ProviderConfigRow | undefined): ImageProviderFormat {
+  return parseImageProviderFormat(input.kind) ?? parseImageProviderFormat(input.imageProviderFormat) ?? activeImageProviderKind(existing);
+}
+
+function resolveImageProviderConfigsForSave(
+  inputs: SaveProviderConfigRequest["imageConfigs"],
+  existingRows: ImageProviderConfigRowsByKind,
+  legacy: ProviderConfigRow | undefined
+): ResolvedImageProviderConfig[] {
+  if (!inputs) {
+    return [];
   }
 
+  return IMAGE_PROVIDER_FORMATS.flatMap((kind) => {
+    const input = inputs[kind];
+    if (!input) {
+      return [];
+    }
+
+    return [
+      resolveImageProviderConfigForSave(
+        {
+          ...input,
+          kind,
+          imageProviderFormat: kind
+        },
+        kind,
+        existingRows[kind],
+        legacy
+      )
+    ];
+  });
+}
+
+function dedupeImageProviderConfigs(configs: ResolvedImageProviderConfig[]): ResolvedImageProviderConfig[] {
+  const byKind = new Map<ImageProviderFormat, ResolvedImageProviderConfig>();
+  for (const config of configs) {
+    byKind.set(config.kind, config);
+  }
+  return [...byKind.values()];
+}
+
+function resolveImageProviderConfigForSave(
+  input: SaveLocalOpenAIProviderConfig,
+  kind: ImageProviderFormat,
+  existing: Pick<ImageProviderConfigRow, "apiKey" | "baseUrl" | "model" | "timeoutMs"> | undefined,
+  legacy: ProviderConfigRow | undefined
+): ResolvedImageProviderConfig {
+  const existingForKind = existing ?? legacyImageProviderConfigRowForKind(kind, legacy);
   return {
-    localApiKey: resolveLocalApiKey(input, existing),
-    localBaseUrl: Object.hasOwn(input, "baseUrl") ? trimToNull(input.baseUrl) : (existing?.localBaseUrl ?? null),
-    localImageProviderFormat: Object.hasOwn(input, "imageProviderFormat")
-      ? (parseImageProviderFormat(input.imageProviderFormat) ?? "newapi")
-      : (parseImageProviderFormat(existing?.localImageProviderFormat) ?? null),
-    localModel: Object.hasOwn(input, "model") ? trimToNull(input.model) : (existing?.localModel ?? null),
-    localTimeoutMs: Object.hasOwn(input, "timeoutMs")
-      ? requiredPositiveInteger(input.timeoutMs, "Custom OpenAI timeout")
-      : (existing?.localTimeoutMs ?? null)
+    kind,
+    apiKey: resolveImageApiKey(input, existingForKind),
+    baseUrl: Object.hasOwn(input, "baseUrl") ? trimToNull(input.baseUrl) : (existingForKind.baseUrl ?? null),
+    model: Object.hasOwn(input, "model") ? trimToNull(input.model) : (existingForKind.model ?? null),
+    timeoutMs: Object.hasOwn(input, "timeoutMs")
+      ? requiredPositiveInteger(input.timeoutMs, "Custom image provider timeout")
+      : (existingForKind.timeoutMs ?? null)
   };
 }
 
-function resolveLocalApiKey(input: SaveLocalOpenAIProviderConfig, existing: ProviderConfigRow | undefined): string | null {
+function saveImageProviderConfigForKind(config: ResolvedImageProviderConfig, now: string): void {
+  const row: ImageProviderConfigRow = {
+    kind: config.kind,
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    timeoutMs: config.timeoutMs,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  db.insert(imageProviderConfigs)
+    .values(row)
+    .onConflictDoUpdate({
+      target: imageProviderConfigs.kind,
+      set: {
+        apiKey: row.apiKey,
+        baseUrl: row.baseUrl,
+        model: row.model,
+        timeoutMs: row.timeoutMs,
+        updatedAt: row.updatedAt
+      }
+    })
+    .run();
+}
+
+function resolveImageApiKey(
+  input: SaveLocalOpenAIProviderConfig,
+  existing: Pick<ImageProviderConfigRow, "apiKey"> | undefined
+): string | null {
   if (typeof input.apiKey === "string") {
     const trimmed = input.apiKey.trim();
     if (trimmed) {
       return trimmed;
     }
 
-    return input.preserveApiKey === true ? (existing?.localApiKey ?? null) : null;
+    return input.preserveApiKey === true ? (existing?.apiKey ?? null) : null;
   }
 
-  return existing?.localApiKey ?? null;
+  return existing?.apiKey ?? null;
 }
 
 function resolveVideoProviderConfigForSave(

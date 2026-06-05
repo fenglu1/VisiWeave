@@ -58,7 +58,7 @@ export class ProviderError extends Error {
 export interface OpenAIImageProviderConfig {
   apiKey: string;
   baseURL?: string;
-  imageProviderFormat?: ImageProviderFormat;
+  imageProviderFormat?: RuntimeImageProviderFormat;
   model: string;
   timeoutMs: number;
 }
@@ -67,6 +67,7 @@ export const DEFAULT_OPENAI_IMAGE_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_PROVIDER_IMAGE_BYTES = 100 * 1024 * 1024;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
+type RuntimeImageProviderFormat = ImageProviderFormat | "gemini";
 
 type FlexibleImageGenerateParams = Omit<ImageGenerateParamsNonStreaming, "size"> & {
   size: string;
@@ -75,6 +76,29 @@ type FlexibleImageGenerateParams = Omit<ImageGenerateParamsNonStreaming, "size">
 type FlexibleImageEditParams = Omit<ImageEditParamsNonStreaming, "size"> & {
   size: string;
 };
+
+interface GeminiGenerateContentRequest {
+  contents: Array<{
+    role: "user";
+    parts: GeminiPart[];
+  }>;
+  generationConfig: {
+    responseModalities: ["TEXT", "IMAGE"];
+  };
+}
+
+type GeminiPart =
+  | {
+      text: string;
+    }
+  | {
+      inlineData: GeminiInlineData;
+    };
+
+interface GeminiInlineData {
+  mimeType: string;
+  data: string;
+}
 
 export function getOpenAIImageProviderConfig():
   | {
@@ -116,7 +140,11 @@ export function parseOpenAIImageTimeoutMs(value: string | undefined): number {
 }
 
 export function createOpenAIImageProvider(config: OpenAIImageProviderConfig): ImageProvider {
-  return imageProviderFormat(config) === "sub2api" ? new Sub2APIImageProvider(config) : new OpenAIImageProvider(config);
+  const format = imageProviderFormat(config);
+  if (format === "gemini") {
+    return new GeminiImageProvider(config);
+  }
+  return format === "sub2api" ? new Sub2APIImageProvider(config) : new OpenAIImageProvider(config);
 }
 
 class OpenAIImageProvider implements ImageProvider {
@@ -286,6 +314,76 @@ class Sub2APIImageProvider implements ImageProvider {
   }
 }
 
+class GeminiImageProvider implements ImageProvider {
+  constructor(private readonly config: OpenAIImageProviderConfig) {}
+
+  async generate(input: ImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
+    return this.post(
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: input.prompt }]
+          }
+        ],
+        generationConfig: geminiGenerationConfig()
+      },
+      input.sizeApiValue,
+      signal
+    );
+  }
+
+  async edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
+    return this.post(
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [...input.referenceImages.map((referenceImage) => ({ inlineData: geminiInlineData(referenceImage) })), { text: input.prompt }]
+          }
+        ],
+        generationConfig: geminiGenerationConfig()
+      },
+      input.sizeApiValue,
+      signal
+    );
+  }
+
+  private async post(body: GeminiGenerateContentRequest, sizeApiValue: string, signal?: AbortSignal): Promise<ProviderResult> {
+    const timeout = timeoutSignal(signal, this.config.timeoutMs);
+    try {
+      const response = await fetch(geminiGenerateContentEndpoint(this.config.baseURL, this.config.model), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": this.config.apiKey
+        },
+        body: JSON.stringify(body),
+        signal: timeout.signal
+      }).catch((error: unknown) => {
+        throw geminiFetchFailureToProviderError(error);
+      });
+
+      if (!response.ok) {
+        throw await geminiHttpProviderError(response);
+      }
+
+      const images = await readGeminiProviderImages(response);
+      if (images.length === 0) {
+        throw new ProviderError("unsupported_provider_behavior", "Gemini image service did not return image data.", 502);
+      }
+
+      return {
+        model: this.config.model,
+        size: sizeApiValue,
+        images
+      };
+    } finally {
+      timeout.cleanup();
+    }
+  }
+}
+
 function imageGenerateRequestBody(body: FlexibleImageGenerateParams): ImageGenerateParamsNonStreaming {
   // The SDK's image size union can lag gpt-image-2's documented flexible-size support.
   return body as unknown as ImageGenerateParamsNonStreaming;
@@ -294,6 +392,67 @@ function imageGenerateRequestBody(body: FlexibleImageGenerateParams): ImageGener
 function imageEditRequestBody(body: FlexibleImageEditParams): ImageEditParamsNonStreaming {
   // The SDK's image size union can lag gpt-image-2's documented flexible-size support.
   return body as unknown as ImageEditParamsNonStreaming;
+}
+
+function geminiGenerationConfig(): GeminiGenerateContentRequest["generationConfig"] {
+  return {
+    responseModalities: ["TEXT", "IMAGE"]
+  };
+}
+
+function geminiInlineData(input: ReferenceImageInput): GeminiInlineData {
+  const match = /^data:([^;,]+);base64,(.+)$/u.exec(input.dataUrl);
+  if (!match) {
+    throw new ProviderError("unsupported_provider_behavior", "Reference image data URL is not supported.", 400);
+  }
+
+  const mimeType = match[1].toLowerCase();
+  if (!SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType)) {
+    throw new ProviderError("unsupported_provider_behavior", "Reference images must be PNG, JPEG, or WebP.", 400);
+  }
+
+  const data = match[2].trim();
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new ProviderError("unsupported_provider_behavior", "Reference images cannot exceed 50MB.", 400);
+  }
+
+  return {
+    mimeType: normalizeReferenceMimeType(mimeType),
+    data
+  };
+}
+
+async function readGeminiProviderImages(response: Response): Promise<ProviderImage[]> {
+  let json: unknown;
+  try {
+    json = (await response.json()) as unknown;
+  } catch {
+    return [];
+  }
+
+  const record = objectValue(json);
+  const candidates = Array.isArray(record?.candidates) ? record.candidates : [];
+  const images: ProviderImage[] = [];
+
+  for (const candidate of candidates) {
+    const candidateRecord = objectValue(candidate);
+    const content = objectValue(candidateRecord?.content);
+    const parts = Array.isArray(content?.parts) ? content.parts : [];
+
+    for (const part of parts) {
+      const partRecord = objectValue(part);
+      const inlineData = objectValue(partRecord?.inlineData) ?? objectValue(partRecord?.inline_data);
+      const data = stringRecordValue(inlineData, "data");
+      if (data) {
+        images.push({
+          b64Json: normalizeImageBase64(data)
+        });
+      }
+    }
+  }
+
+  return images;
 }
 
 function toProviderError(error: unknown): Error {
@@ -719,13 +878,17 @@ function normalizeImageBase64(value: string): string {
   return dataUrlMatch?.[1] ?? trimmed;
 }
 
-function imageProviderFormat(config: OpenAIImageProviderConfig): ImageProviderFormat {
+function normalizeReferenceMimeType(mimeType: string): string {
+  return mimeType === "image/jpg" ? "image/jpeg" : mimeType;
+}
+
+function imageProviderFormat(config: OpenAIImageProviderConfig): RuntimeImageProviderFormat {
   return parseImageProviderFormat(config.imageProviderFormat) ?? "newapi";
 }
 
-function parseImageProviderFormat(value: unknown): ImageProviderFormat | undefined {
+function parseImageProviderFormat(value: unknown): RuntimeImageProviderFormat | undefined {
   const normalized = typeof value === "string" ? value.trim() : "";
-  return (IMAGE_PROVIDER_FORMATS as readonly string[]).includes(normalized) ? (normalized as ImageProviderFormat) : undefined;
+  return [...IMAGE_PROVIDER_FORMATS, "gemini"].includes(normalized) ? (normalized as RuntimeImageProviderFormat) : undefined;
 }
 
 function sub2ApiEndpoint(baseURL: string | undefined, path: string): string {
@@ -736,6 +899,11 @@ function sub2ApiEndpoint(baseURL: string | undefined, path: string): string {
   }
 
   return `${normalizedBaseURL}${normalizedPath}`;
+}
+
+function geminiGenerateContentEndpoint(baseURL: string | undefined, model: string): string {
+  const normalizedBaseURL = (baseURL?.trim() || "https://generativelanguage.googleapis.com").replace(/\/+$/u, "");
+  return `${normalizedBaseURL}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 }
 
 async function sub2ApiHttpProviderError(response: Response): Promise<ProviderError> {
@@ -755,6 +923,19 @@ async function sub2ApiHttpProviderError(response: Response): Promise<ProviderErr
   return new ProviderError(
     "upstream_failure",
     message || `Sub2API 图像服务请求失败（HTTP ${response.status}）。`,
+    providerHttpStatus(response.status)
+  );
+}
+
+async function geminiHttpProviderError(response: Response): Promise<ProviderError> {
+  const message = await safeProviderErrorMessage(response);
+  if (response.status === 401 || response.status === 403) {
+    return new ProviderError("upstream_failure", message || "Gemini image service authentication failed. Check the API key.", response.status);
+  }
+
+  return new ProviderError(
+    "upstream_failure",
+    message || `Gemini image service request failed (HTTP ${response.status}).`,
     providerHttpStatus(response.status)
   );
 }
@@ -785,6 +966,18 @@ function sub2ApiFetchFailureToProviderError(error: unknown): ProviderError | Err
   }
 
   return new ProviderError("upstream_failure", "Sub2API 图像服务请求失败，请稍后重试。", 502);
+}
+
+function geminiFetchFailureToProviderError(error: unknown): ProviderError | Error {
+  if (isAbortError(error)) {
+    return new ProviderError("upstream_failure", "Gemini image service request timed out. Try again later or lower the resolution.", 504);
+  }
+
+  if (error instanceof ProviderError) {
+    return error;
+  }
+
+  return new ProviderError("upstream_failure", "Gemini image service request failed. Try again later.", 502);
 }
 
 function sub2ApiEventErrorMessage(record: Record<string, unknown>): string {
