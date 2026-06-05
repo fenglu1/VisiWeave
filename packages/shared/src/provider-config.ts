@@ -1,4 +1,6 @@
 export type RuntimeImageProvider = "openai" | "codex" | "none";
+export const IMAGE_PROVIDER_FORMATS = ["newapi", "sub2api"] as const;
+export type ImageProviderFormat = (typeof IMAGE_PROVIDER_FORMATS)[number];
 export const VIDEO_PROVIDER_KINDS = ["keyframe-image", "custom-http", "grok-imagine"] as const;
 export type VideoProviderKind = (typeof VIDEO_PROVIDER_KINDS)[number];
 
@@ -23,6 +25,7 @@ export interface CodexAuthSessionView {
 
 export interface ProviderSourceDetails {
   baseUrl?: string;
+  imageProviderFormat?: ImageProviderFormat;
   model?: string;
   timeoutMs?: number;
   codex?: CodexAuthSessionView;
@@ -50,6 +53,7 @@ export interface ProviderSourceSummary {
 export interface LocalOpenAIProviderConfigView {
   apiKey: MaskedSecret;
   baseUrl: string;
+  imageProviderFormat: ImageProviderFormat;
   model: string;
   timeoutMs: number;
 }
@@ -90,6 +94,7 @@ export interface SaveLocalOpenAIProviderConfig {
   apiKey?: string;
   preserveApiKey?: boolean;
   baseUrl?: string;
+  imageProviderFormat?: ImageProviderFormat;
   model?: string;
   timeoutMs?: number;
 }

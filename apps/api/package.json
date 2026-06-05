@@ -15,6 +15,7 @@
     "smoke:provider-video-config": "tsx src/smoke/provider-video-config-smoke.ts",
     "smoke:custom-http-grok2api-video": "tsx src/smoke/custom-http-grok2api-video-smoke.ts",
     "smoke:grok-imagine-video": "tsx src/smoke/grok-imagine-video-provider-smoke.ts",
+    "smoke:image-provider-format": "tsx src/smoke/image-provider-format-smoke.ts",
     "smoke:video-library-delete": "tsx src/smoke/video-library-delete-smoke.ts",
     "typecheck": "pnpm --filter @gpt-image-canvas/shared build && tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js"

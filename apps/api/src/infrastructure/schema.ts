@@ -46,6 +46,7 @@ export const providerConfigs = sqliteTable("provider_configs", {
   sourceOrderJson: text("source_order_json").notNull(),
   localApiKey: text("local_api_key"),
   localBaseUrl: text("local_base_url"),
+  localImageProviderFormat: text("local_image_provider_format"),
   localModel: text("local_model"),
   localTimeoutMs: integer("local_timeout_ms"),
   videoKind: text("video_kind"),

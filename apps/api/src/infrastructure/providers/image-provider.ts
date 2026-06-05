@@ -2,6 +2,8 @@ import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError, toFile 
 import type { Image, ImageEditParamsNonStreaming, ImageGenerateParamsNonStreaming, ImagesResponse } from "openai/resources/images";
 import {
   IMAGE_MODEL,
+  IMAGE_PROVIDER_FORMATS,
+  type ImageProviderFormat,
   type ImageQuality,
   type ImageSize,
   type OutputFormat,
@@ -56,6 +58,7 @@ export class ProviderError extends Error {
 export interface OpenAIImageProviderConfig {
   apiKey: string;
   baseURL?: string;
+  imageProviderFormat?: ImageProviderFormat;
   model: string;
   timeoutMs: number;
 }
@@ -97,6 +100,7 @@ export function getOpenAIImageProviderConfig():
     config: {
       apiKey,
       baseURL: baseURL || undefined,
+      imageProviderFormat: parseImageProviderFormat(process.env.OPENAI_IMAGE_PROVIDER_FORMAT) ?? "newapi",
       model: getConfiguredImageModel(),
       timeoutMs: parseOpenAIImageTimeoutMs(process.env.OPENAI_IMAGE_TIMEOUT_MS)
     }
@@ -112,7 +116,7 @@ export function parseOpenAIImageTimeoutMs(value: string | undefined): number {
 }
 
 export function createOpenAIImageProvider(config: OpenAIImageProviderConfig): ImageProvider {
-  return new OpenAIImageProvider(config);
+  return imageProviderFormat(config) === "sub2api" ? new Sub2APIImageProvider(config) : new OpenAIImageProvider(config);
 }
 
 class OpenAIImageProvider implements ImageProvider {
@@ -165,6 +169,119 @@ class OpenAIImageProvider implements ImageProvider {
       return await normalizeProviderResponse(response, input.sizeApiValue, this.config.model, signal);
     } catch (error) {
       throw toProviderError(error);
+    }
+  }
+}
+
+class Sub2APIImageProvider implements ImageProvider {
+  constructor(private readonly config: OpenAIImageProviderConfig) {}
+
+  async generate(input: ImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
+    return this.postJson(
+      "/v1/images/generations",
+      {
+        model: this.config.model,
+        prompt: input.prompt,
+        size: input.sizeApiValue,
+        quality: input.quality,
+        output_format: input.outputFormat,
+        response_format: "b64_json",
+        stream: true,
+        partial_images: 1,
+        n: input.count
+      },
+      input.sizeApiValue,
+      signal
+    );
+  }
+
+  async edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
+    const form = new FormData();
+    form.set("model", this.config.model);
+    form.set("prompt", input.prompt);
+    form.set("size", input.sizeApiValue);
+    form.set("quality", input.quality);
+    form.set("output_format", input.outputFormat);
+    form.set("response_format", "b64_json");
+    form.set("stream", "true");
+    form.set("partial_images", "1");
+    form.set("n", String(input.count));
+
+    const references = await Promise.all(input.referenceImages.map((referenceImage) => dataUrlToFile(referenceImage)));
+    for (const reference of references) {
+      form.append("image", reference);
+    }
+
+    return this.postForm("/v1/images/edits", form, input.sizeApiValue, signal);
+  }
+
+  private async providerResultFromResponse(
+    response: Response,
+    sizeApiValue: string,
+    signal?: AbortSignal
+  ): Promise<ProviderResult> {
+    const images = await readSub2APIProviderImages(response, signal);
+    if (images.length === 0) {
+      throw new ProviderError("unsupported_provider_behavior", "Sub2API 图像服务没有返回图像结果。", 502);
+    }
+
+    return {
+      model: this.config.model,
+      size: sizeApiValue,
+      images
+    };
+  }
+
+  private postJson(path: string, body: Record<string, unknown>, sizeApiValue: string, signal?: AbortSignal): Promise<ProviderResult> {
+    return this.post(path, {
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      sizeApiValue,
+      signal
+    });
+  }
+
+  private postForm(path: string, body: FormData, sizeApiValue: string, signal?: AbortSignal): Promise<ProviderResult> {
+    return this.post(path, {
+      body,
+      sizeApiValue,
+      signal
+    });
+  }
+
+  private async post(
+    path: string,
+    init: {
+      body: BodyInit;
+      headers?: HeadersInit;
+      signal?: AbortSignal;
+      sizeApiValue: string;
+    }
+  ): Promise<ProviderResult> {
+    const timeout = timeoutSignal(init.signal, this.config.timeoutMs);
+    try {
+      const response = await fetch(sub2ApiEndpoint(this.config.baseURL, path), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          Accept: "text/event-stream, application/json",
+          ...init.headers
+        },
+        body: init.body,
+        signal: timeout.signal
+      }).catch((error: unknown) => {
+        throw sub2ApiFetchFailureToProviderError(error);
+      });
+
+      if (!response.ok) {
+        throw await sub2ApiHttpProviderError(response);
+      }
+
+      return await this.providerResultFromResponse(response, init.sizeApiValue, timeout.signal);
+    } finally {
+      timeout.cleanup();
     }
   }
 }
@@ -257,6 +374,290 @@ async function providerImageFromResponseItem(item: Image, signal?: AbortSignal):
   };
 }
 
+async function readSub2APIProviderImages(response: Response, signal?: AbortSignal): Promise<ProviderImage[]> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const json = (await response.json()) as ImagesResponse;
+    if (!Array.isArray(json.data)) {
+      return [];
+    }
+    const images = await Promise.all(json.data.map((item) => providerImageFromResponseItem(item, signal)));
+    return images.filter((image) => image.b64Json);
+  }
+
+  return readSub2APIProviderImagesFromStream(response, signal);
+}
+
+async function readSub2APIProviderImagesFromStream(response: Response, signal?: AbortSignal): Promise<ProviderImage[]> {
+  if (!response.body) {
+    const events = parseSseEvents(await response.text());
+    return extractSub2APIImagesFromEvents(events, signal);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const state: Sub2APISseState = {
+    dataLines: [],
+    eventName: ""
+  };
+  let pending = "";
+  let isDone = false;
+
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) {
+        isDone = true;
+        break;
+      }
+
+      pending += decoder.decode(result.value, { stream: true });
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+
+      for (const rawLine of lines) {
+        const images = await processSub2APISseLine(rawLine.replace(/\r$/u, ""), state, signal);
+        if (images) {
+          return images;
+        }
+      }
+    }
+
+    pending += decoder.decode();
+    if (pending) {
+      const images = await processSub2APISseLine(pending.replace(/\r$/u, ""), state, signal);
+      if (images) {
+        return images;
+      }
+    }
+
+    const finalImages = await flushSub2APISseEvent(state, signal);
+    if (finalImages) {
+      return finalImages;
+    }
+    return state.lastCandidate ? [state.lastCandidate] : [];
+  } finally {
+    if (!isDone) {
+      await reader.cancel().catch(() => undefined);
+    }
+  }
+}
+
+function parseSseEvents(text: string): unknown[] {
+  const events: unknown[] = [];
+  let dataLines: string[] = [];
+  let eventName = "";
+
+  const flush = (): void => {
+    if (dataLines.length === 0) {
+      eventName = "";
+      return;
+    }
+
+    const data = dataLines.join("\n").trim();
+    const currentEventName = eventName;
+    eventName = "";
+    dataLines = [];
+    if (!data || data === "[DONE]") {
+      return;
+    }
+
+    try {
+      events.push(withSub2APIEventName(JSON.parse(data) as unknown, currentEventName));
+    } catch {
+      events.push(data);
+    }
+  };
+
+  for (const line of text.split(/\r?\n/u)) {
+    if (line.length === 0) {
+      flush();
+      continue;
+    }
+
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+      continue;
+    }
+
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+    }
+  }
+
+  flush();
+  return events;
+}
+
+async function extractSub2APIImagesFromEvents(events: unknown[], signal?: AbortSignal): Promise<ProviderImage[]> {
+  let lastCandidate: ProviderImage | undefined;
+
+  for (const event of events) {
+    const record = objectValue(event);
+    if (!record) {
+      continue;
+    }
+
+    const errorMessage = sub2ApiEventErrorMessage(record);
+    if (errorMessage) {
+      throw new ProviderError("upstream_failure", errorMessage, 502);
+    }
+
+    const images = await extractSub2APIImagesFromEvent(record, signal);
+    if (images.length > 0) {
+      lastCandidate = images[images.length - 1];
+    }
+
+    if (sub2ApiTerminalEvent(record) && lastCandidate) {
+      return [lastCandidate];
+    }
+  }
+
+  return lastCandidate ? [lastCandidate] : [];
+}
+
+async function extractSub2APIImagesFromEvent(record: Record<string, unknown>, signal?: AbortSignal): Promise<ProviderImage[]> {
+  const images: ProviderImage[] = [];
+
+  const topLevelImage = await providerImageFromFlexibleRecord(record, signal);
+  if (topLevelImage) {
+    images.push(topLevelImage);
+  }
+
+  const item = objectValue(record.item) ?? objectValue(record.output_item);
+  if (item) {
+    const itemImage = await providerImageFromFlexibleRecord(item, signal);
+    if (itemImage) {
+      images.push(itemImage);
+    }
+  }
+
+  const response = objectValue(record.response);
+  const output = Array.isArray(response?.output) ? response.output : [];
+  for (const outputItem of output) {
+    const outputRecord = objectValue(outputItem);
+    if (!outputRecord) {
+      continue;
+    }
+
+    const outputImage = await providerImageFromFlexibleRecord(outputRecord, signal);
+    if (outputImage) {
+      images.push(outputImage);
+    }
+  }
+
+  return images;
+}
+
+async function providerImageFromFlexibleRecord(record: Record<string, unknown>, signal?: AbortSignal): Promise<ProviderImage | undefined> {
+  const b64Json =
+    stringRecordValue(record, "b64_json") ??
+    stringRecordValue(record, "partial_image_b64") ??
+    stringRecordValue(record, "result");
+  if (b64Json) {
+    return {
+      b64Json: normalizeImageBase64(b64Json)
+    };
+  }
+
+  const url = stringRecordValue(record, "url");
+  if (url) {
+    return {
+      b64Json: await downloadProviderImageUrl(url, signal)
+    };
+  }
+
+  return undefined;
+}
+
+interface Sub2APISseState {
+  dataLines: string[];
+  eventName: string;
+  lastCandidate?: ProviderImage;
+}
+
+async function processSub2APISseLine(
+  line: string,
+  state: Sub2APISseState,
+  signal?: AbortSignal
+): Promise<ProviderImage[] | undefined> {
+  if (line === "") {
+    return flushSub2APISseEvent(state, signal);
+  }
+  if (line.startsWith(":")) {
+    return undefined;
+  }
+  if (line.startsWith("event:")) {
+    state.eventName = line.slice(6).trim();
+    return undefined;
+  }
+  if (line.startsWith("data:")) {
+    state.dataLines.push(line.slice(5).trimStart());
+  }
+  return undefined;
+}
+
+async function flushSub2APISseEvent(state: Sub2APISseState, signal?: AbortSignal): Promise<ProviderImage[] | undefined> {
+  if (state.dataLines.length === 0) {
+    state.eventName = "";
+    return undefined;
+  }
+
+  const data = state.dataLines.join("\n").trim();
+  const eventName = state.eventName;
+  state.dataLines = [];
+  state.eventName = "";
+
+  if (!data || data === "[DONE]") {
+    return undefined;
+  }
+
+  let event: unknown;
+  try {
+    event = withSub2APIEventName(JSON.parse(data) as unknown, eventName);
+  } catch {
+    return undefined;
+  }
+
+  const record = objectValue(event);
+  if (!record) {
+    return undefined;
+  }
+
+  const errorMessage = sub2ApiEventErrorMessage(record);
+  if (errorMessage) {
+    throw new ProviderError("upstream_failure", errorMessage, 502);
+  }
+
+  const images = await extractSub2APIImagesFromEvent(record, signal);
+  if (images.length > 0) {
+    state.lastCandidate = images[images.length - 1];
+  }
+
+  if (sub2ApiTerminalEvent(record) && state.lastCandidate) {
+    return [state.lastCandidate];
+  }
+
+  return undefined;
+}
+
+function withSub2APIEventName(event: unknown, eventName: string): unknown {
+  const record = objectValue(event);
+  if (!record || !eventName || stringRecordValue(record, "type")) {
+    return event;
+  }
+
+  return {
+    ...record,
+    type: eventName
+  };
+}
+
+function sub2ApiTerminalEvent(record: Record<string, unknown>): boolean {
+  const eventType = stringRecordValue(record, "type");
+  return eventType === "image_generation.completed" || eventType === "response.completed" || eventType === "response.done";
+}
+
 async function downloadProviderImageUrl(url: string, signal?: AbortSignal): Promise<string> {
   const parsedUrl = parseProviderImageUrl(url);
   if (!parsedUrl) {
@@ -312,6 +713,121 @@ function dataUrlToBase64(url: string): string {
   return match[1];
 }
 
+function normalizeImageBase64(value: string): string {
+  const trimmed = value.trim();
+  const dataUrlMatch = /^data:image\/[^;,]+;base64,(.+)$/u.exec(trimmed);
+  return dataUrlMatch?.[1] ?? trimmed;
+}
+
+function imageProviderFormat(config: OpenAIImageProviderConfig): ImageProviderFormat {
+  return parseImageProviderFormat(config.imageProviderFormat) ?? "newapi";
+}
+
+function parseImageProviderFormat(value: unknown): ImageProviderFormat | undefined {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return (IMAGE_PROVIDER_FORMATS as readonly string[]).includes(normalized) ? (normalized as ImageProviderFormat) : undefined;
+}
+
+function sub2ApiEndpoint(baseURL: string | undefined, path: string): string {
+  const normalizedBaseURL = (baseURL?.trim() || "https://api.openai.com/v1").replace(/\/+$/u, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  if (normalizedBaseURL.endsWith("/v1") && normalizedPath.startsWith("/v1/")) {
+    return `${normalizedBaseURL}${normalizedPath.slice(3)}`;
+  }
+
+  return `${normalizedBaseURL}${normalizedPath}`;
+}
+
+async function sub2ApiHttpProviderError(response: Response): Promise<ProviderError> {
+  const message = await safeProviderErrorMessage(response);
+  if (response.status === 401 || response.status === 403) {
+    return new ProviderError("upstream_failure", message || "Sub2API 图像服务认证失败，请检查 API Key。", response.status);
+  }
+
+  if (response.status === 524) {
+    return new ProviderError(
+      "upstream_failure",
+      "Sub2API 图像服务请求超过 Cloudflare 等待窗口，请稍后重试或降低分辨率。",
+      providerHttpStatus(response.status)
+    );
+  }
+
+  return new ProviderError(
+    "upstream_failure",
+    message || `Sub2API 图像服务请求失败（HTTP ${response.status}）。`,
+    providerHttpStatus(response.status)
+  );
+}
+
+async function safeProviderErrorMessage(response: Response): Promise<string> {
+  const contentType = response.headers.get("content-type") ?? "";
+  try {
+    if (contentType.includes("application/json")) {
+      const json = (await response.json()) as unknown;
+      const record = objectValue(json);
+      const error = objectValue(record?.error);
+      return stringRecordValue(error ?? record, "message") ?? stringRecordValue(record, "detail") ?? "";
+    }
+
+    return (await response.text()).trim().slice(0, 300);
+  } catch {
+    return "";
+  }
+}
+
+function sub2ApiFetchFailureToProviderError(error: unknown): ProviderError | Error {
+  if (isAbortError(error)) {
+    return new ProviderError("upstream_failure", "Sub2API 图像服务请求超时，请稍后重试或降低分辨率。", 504);
+  }
+
+  if (error instanceof ProviderError) {
+    return error;
+  }
+
+  return new ProviderError("upstream_failure", "Sub2API 图像服务请求失败，请稍后重试。", 502);
+}
+
+function sub2ApiEventErrorMessage(record: Record<string, unknown>): string {
+  const error = record.error;
+  if (typeof error === "string") {
+    return error;
+  }
+
+  const errorRecord = objectValue(error);
+  if (errorRecord) {
+    return stringRecordValue(errorRecord, "message") ?? stringRecordValue(errorRecord, "code") ?? "";
+  }
+
+  const response = objectValue(record.response);
+  const status = stringRecordValue(response, "status");
+  if (status === "failed" || status === "incomplete" || status === "cancelled" || status === "canceled") {
+    const responseError = objectValue(response?.error);
+    return stringRecordValue(responseError, "message") ?? `response status: ${status}`;
+  }
+
+  return "";
+}
+
+function timeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort(signal?.reason);
+
+  if (signal?.aborted) {
+    abort();
+  } else if (signal) {
+    signal.addEventListener("abort", abort, { once: true });
+  }
+
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    }
+  };
+}
+
 function isProviderImageContentType(value: string | null): boolean {
   if (!value) {
     return true;
@@ -344,6 +860,15 @@ function parseContentLength(value: string | null): number | undefined {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function stringRecordValue(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 async function dataUrlToFile(input: ReferenceImageInput): Promise<File> {

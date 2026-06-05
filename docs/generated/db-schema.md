@@ -66,6 +66,7 @@ Stores image provider source order, local OpenAI-compatible settings, and the cu
 | `source_order_json` | text | Required serialized provider source order. |
 | `local_api_key` | text | Optional local API key. |
 | `local_base_url` | text | Optional OpenAI-compatible base URL. |
+| `local_image_provider_format` | text | Optional local image provider format (`newapi` or `sub2api`). |
 | `local_model` | text | Optional image model. |
 | `local_timeout_ms` | integer | Optional image timeout in milliseconds. |
 | `video_kind` | text | Optional video provider kind. |

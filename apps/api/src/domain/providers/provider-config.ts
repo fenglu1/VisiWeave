@@ -1,9 +1,11 @@
 import { eq } from "drizzle-orm";
 import {
+  IMAGE_PROVIDER_FORMATS,
   IMAGE_MODEL,
   PROVIDER_SOURCE_IDS,
   VIDEO_PROVIDER_KINDS,
   type CodexAuthSessionView,
+  type ImageProviderFormat,
   type LocalOpenAIProviderConfigView,
   type MaskedSecret,
   type ProviderConfigResponse,
@@ -48,6 +50,7 @@ type VideoProviderConfigRowsByKind = Partial<Record<VideoProviderKind, VideoProv
 interface ResolvedLocalConfig {
   localApiKey: string | null;
   localBaseUrl: string | null;
+  localImageProviderFormat: ImageProviderFormat | null;
   localModel: string | null;
   localTimeoutMs: number | null;
 }
@@ -121,6 +124,7 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
     sourceOrderJson: JSON.stringify(input.sourceOrder),
     localApiKey: local.localApiKey,
     localBaseUrl: local.localBaseUrl,
+    localImageProviderFormat: local.localImageProviderFormat,
     localModel: local.localModel,
     localTimeoutMs: local.localTimeoutMs,
     videoKind: activeVideoKind ?? null,
@@ -149,6 +153,7 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
         sourceOrderJson: row.sourceOrderJson,
         localApiKey: row.localApiKey,
         localBaseUrl: row.localBaseUrl,
+        localImageProviderFormat: row.localImageProviderFormat,
         localModel: row.localModel,
         localTimeoutMs: row.localTimeoutMs,
         videoKind: row.videoKind,
@@ -195,6 +200,7 @@ export function getEnvironmentOpenAIImageProviderConfig(): OpenAIImageProviderCo
   return {
     apiKey,
     baseURL: baseURL || undefined,
+    imageProviderFormat: parseImageProviderFormat(process.env.OPENAI_IMAGE_PROVIDER_FORMAT) ?? "newapi",
     model: getConfiguredImageModel(),
     timeoutMs: parseOpenAIImageTimeoutMs(process.env.OPENAI_IMAGE_TIMEOUT_MS)
   };
@@ -210,6 +216,7 @@ export function getLocalOpenAIImageProviderConfig(): OpenAIImageProviderConfig |
   return {
     apiKey,
     baseURL: trimToUndefined(row?.localBaseUrl),
+    imageProviderFormat: parseImageProviderFormat(row?.localImageProviderFormat) ?? "newapi",
     model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
     timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
   };
@@ -283,6 +290,7 @@ function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView
       status: envConfig ? "available" : "missing_api_key",
       details: {
         baseUrl: process.env.OPENAI_BASE_URL?.trim() || "",
+        imageProviderFormat: parseImageProviderFormat(process.env.OPENAI_IMAGE_PROVIDER_FORMAT) ?? "newapi",
         model: getConfiguredImageModel(),
         timeoutMs: parseOpenAIImageTimeoutMs(process.env.OPENAI_IMAGE_TIMEOUT_MS)
       },
@@ -296,6 +304,7 @@ function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView
       status: localConfig ? "available" : "missing_api_key",
       details: {
         baseUrl: row?.localBaseUrl ?? "",
+        imageProviderFormat: parseImageProviderFormat(row?.localImageProviderFormat) ?? "newapi",
         model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
         timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
       },
@@ -321,6 +330,7 @@ function localOpenAIConfigView(row: ProviderConfigRow | undefined): LocalOpenAIP
   return {
     apiKey: maskedSecret(row?.localApiKey),
     baseUrl: row?.localBaseUrl ?? "",
+    imageProviderFormat: parseImageProviderFormat(row?.localImageProviderFormat) ?? "newapi",
     model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
     timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
   };
@@ -465,6 +475,7 @@ function resolveLocalConfigForSave(
     return {
       localApiKey: existing?.localApiKey ?? null,
       localBaseUrl: existing?.localBaseUrl ?? null,
+      localImageProviderFormat: parseImageProviderFormat(existing?.localImageProviderFormat) ?? null,
       localModel: existing?.localModel ?? null,
       localTimeoutMs: existing?.localTimeoutMs ?? null
     };
@@ -473,6 +484,9 @@ function resolveLocalConfigForSave(
   return {
     localApiKey: resolveLocalApiKey(input, existing),
     localBaseUrl: Object.hasOwn(input, "baseUrl") ? trimToNull(input.baseUrl) : (existing?.localBaseUrl ?? null),
+    localImageProviderFormat: Object.hasOwn(input, "imageProviderFormat")
+      ? (parseImageProviderFormat(input.imageProviderFormat) ?? "newapi")
+      : (parseImageProviderFormat(existing?.localImageProviderFormat) ?? null),
     localModel: Object.hasOwn(input, "model") ? trimToNull(input.model) : (existing?.localModel ?? null),
     localTimeoutMs: Object.hasOwn(input, "timeoutMs")
       ? requiredPositiveInteger(input.timeoutMs, "Custom OpenAI timeout")
@@ -689,6 +703,11 @@ function parseVideoProviderKind(value: string | null | undefined): VideoProvider
   return normalized === "keyframe-image" || normalized === "custom-http" || normalized === "grok-imagine"
     ? normalized
     : undefined;
+}
+
+function parseImageProviderFormat(value: unknown): ImageProviderFormat | undefined {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return (IMAGE_PROVIDER_FORMATS as readonly string[]).includes(normalized) ? (normalized as ImageProviderFormat) : undefined;
 }
 
 function videoConfigSource(

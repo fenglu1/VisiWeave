@@ -78,10 +78,12 @@ For the simplest API-key setup, edit `.env`:
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 OPENAI_IMAGE_MODEL=gpt-image-2
+OPENAI_IMAGE_PROVIDER_FORMAT=newapi
 OPENAI_IMAGE_TIMEOUT_MS=1200000
 ```
 
 Leave `OPENAI_BASE_URL` empty for the official OpenAI API. Set it to an OpenAI-compatible `/v1` endpoint when using another provider, and set `OPENAI_IMAGE_MODEL` if that endpoint expects a different model name.
+`OPENAI_IMAGE_PROVIDER_FORMAT` defaults to `newapi`; set it to `sub2api` for Sub2API-compatible image endpoints that return streamed image events.
 
 You can also open the top-right provider settings dialog and save one local OpenAI-compatible provider. Local keys are stored in SQLite under `DATA_DIR`, returned only as masked values, and preserved until you enter a replacement key.
 
@@ -266,7 +268,7 @@ If a real API key was ever committed, rotate the key. Git ignore rules prevent f
 ## Troubleshooting
 
 - Missing provider: add `OPENAI_API_KEY` to `.env` and restart, save a local provider from settings, or complete Codex login.
-- Custom image endpoint fails: confirm `OPENAI_BASE_URL` points to an OpenAI-compatible `/v1` endpoint and supports the configured image model.
+- Custom image endpoint fails: confirm `OPENAI_BASE_URL` points to an OpenAI-compatible `/v1` endpoint, supports the configured image model, and uses the matching `OPENAI_IMAGE_PROVIDER_FORMAT` (`newapi` or `sub2api`).
 - Video provider fails: confirm `VIDEO_PROVIDER_KIND`, URL, model, and API key match the selected gateway.
 - Agent cannot plan: save the Agent LLM config separately from the image provider config. If `supportsVision` is enabled and the request fails, try fewer or smaller selected images.
 - Port conflict: set `PORT` for API/Docker. For web dev, stop the process on `5173` or run `pnpm web:dev -- --port 5174`.

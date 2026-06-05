@@ -1,6 +1,7 @@
 import {
   GENERATION_COUNTS,
   DEFAULT_VIDEO_DURATION_SECONDS,
+  IMAGE_PROVIDER_FORMATS,
   IMAGE_QUALITIES,
   MAX_REFERENCE_IMAGES,
   OUTPUT_FORMATS,
@@ -14,6 +15,7 @@ import {
   type GenerateVideoRequest,
   type GenerationCount,
   type ImageQuality,
+  type ImageProviderFormat,
   type ImageSize,
   type OutputFormat,
   type ProviderSourceId,
@@ -380,6 +382,11 @@ function parseVideoProviderKind(value: unknown): VideoProviderKind | undefined {
   return value === "keyframe-image" || value === "custom-http" || value === "grok-imagine" ? value : undefined;
 }
 
+function parseImageProviderFormat(value: unknown): ImageProviderFormat | undefined {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return (IMAGE_PROVIDER_FORMATS as readonly string[]).includes(normalized) ? (normalized as ImageProviderFormat) : undefined;
+}
+
 function parseVideoDuration(value: unknown): ParseResult<VideoDurationPreset> {
   if (value === undefined) {
     return {
@@ -626,6 +633,17 @@ function parseLocalOpenAIProviderConfig(input: unknown): ParseResult<SaveLocalOp
       };
     }
     config.baseUrl = input.baseUrl;
+  }
+
+  if (Object.hasOwn(input, "imageProviderFormat")) {
+    const imageProviderFormat = parseImageProviderFormat(input.imageProviderFormat);
+    if (!imageProviderFormat) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Custom OpenAI image provider format must be newapi or sub2api.")
+      };
+    }
+    config.imageProviderFormat = imageProviderFormat;
   }
 
   if (Object.hasOwn(input, "model")) {

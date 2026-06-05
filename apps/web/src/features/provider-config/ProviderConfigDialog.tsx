@@ -24,6 +24,7 @@ import {
   VIDEO_PROVIDER_KINDS,
   type AgentLlmConfigView,
   type AuthStatusResponse,
+  type ImageProviderFormat,
   type ProviderConfigResponse,
   type ProviderSourceId,
   type ProviderSourceView,
@@ -49,6 +50,7 @@ interface ProviderConfigDialogProps {
 interface LocalProviderFormState {
   apiKey: string;
   baseUrl: string;
+  imageProviderFormat: ImageProviderFormat;
   model: string;
   timeoutMs: string;
 }
@@ -92,6 +94,7 @@ interface DialogMessage {
 const emptyLocalProviderForm: LocalProviderFormState = {
   apiKey: "",
   baseUrl: "",
+  imageProviderFormat: "newapi",
   model: "",
   timeoutMs: "1200000"
 };
@@ -280,6 +283,7 @@ export function ProviderConfigDialog({
     setLocalForm({
       apiKey: "",
       baseUrl: nextConfig.localOpenAI.baseUrl,
+      imageProviderFormat: nextConfig.localOpenAI.imageProviderFormat,
       model: nextConfig.localOpenAI.model,
       timeoutMs: String(nextConfig.localOpenAI.timeoutMs)
     });
@@ -475,6 +479,7 @@ export function ProviderConfigDialog({
         apiKey,
         preserveApiKey: !apiKey && hasSavedLocalKey,
         baseUrl: localForm.baseUrl.trim(),
+        imageProviderFormat: localForm.imageProviderFormat,
         model: localForm.model.trim(),
         timeoutMs
       },
@@ -713,6 +718,19 @@ export function ProviderConfigDialog({
                           value={localForm.baseUrl}
                           onChange={(event) => updateLocalForm({ baseUrl: event.target.value })}
                         />
+                      </label>
+                      <label className="provider-field">
+                        <span>{t("providerImageFormat")}</span>
+                        <select
+                          className="provider-field__control"
+                          data-testid="provider-local-image-format"
+                          name="localOpenAIImageProviderFormat"
+                          value={localForm.imageProviderFormat}
+                          onChange={(event) => updateLocalForm({ imageProviderFormat: event.target.value as ImageProviderFormat })}
+                        >
+                          <option value="newapi">{t("providerImageFormatNewApi")}</option>
+                          <option value="sub2api">{t("providerImageFormatSub2Api")}</option>
+                        </select>
                       </label>
                       <label className="provider-field">
                         <span>{t("providerFieldModel")}</span>

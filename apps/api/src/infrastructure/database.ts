@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   source_order_json TEXT NOT NULL,
   local_api_key TEXT,
   local_base_url TEXT,
+  local_image_provider_format TEXT,
   local_model TEXT,
   local_timeout_ms INTEGER,
   video_kind TEXT,
@@ -244,6 +245,7 @@ ensureColumn("codex_oauth_tokens", "unavailable_reason", "unavailable_reason TEX
 ensureColumn("provider_configs", "source_order_json", "source_order_json TEXT NOT NULL DEFAULT '[\"env-openai\",\"local-openai\",\"codex\"]'");
 ensureColumn("provider_configs", "local_api_key", "local_api_key TEXT");
 ensureColumn("provider_configs", "local_base_url", "local_base_url TEXT");
+ensureColumn("provider_configs", "local_image_provider_format", "local_image_provider_format TEXT");
 ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
 ensureColumn("provider_configs", "video_kind", "video_kind TEXT");
