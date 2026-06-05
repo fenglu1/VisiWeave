@@ -1,18 +1,20 @@
-# GPT Image Canvas
+# 织影 VisiWeave
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-GPT Image Canvas 是一个本地优先的 AI 创作工作台，支持图像生成、参考图生成、多步骤 Agent 规划和视频生成。项目把 tldraw 画布、Hono API、SQLite 本地持久化、OpenAI 兼容 provider、可选腾讯云 COS 备份组合在一起，适合在自己的电脑上完成创作、整理、复用和导出资产。
+织影 VisiWeave 是一个本地优先的 AI 视觉创作工作台，用来把提示词、参考图、生成图、Agent 计划和视频任务编织到同一张可编辑画布里。项目把 tldraw 画布、Hono API、SQLite 本地持久化、OpenAI 兼容图像 provider、视频 provider 适配、Agent 规划和可选腾讯云 COS 备份组合在一起，适合在自己的电脑上完成创作、整理、复用和导出资产。
 
 当前版本：`v0.2.0`。
 
+对外产品名是 `织影 / VisiWeave`。部分 package 名、workspace filter 和本地数据库文件名仍保留历史标识 `gpt-image-canvas`，这是为了兼容当前项目结构。
+
 ## 预览
 
-![GPT Image Canvas 预览图](docs/assets/app-preview.png)
+![织影 VisiWeave 预览图](docs/assets/app-preview.png)
 
 ## 主要功能
 
-- 在无限 tldraw 画布上摆放生成图、参考图和 Agent 计划节点。
+- 在无限 tldraw 画布上摆放生成图、参考图和 Agent 计划节点，把创作过程组织成可视化生产板。
 - 手动文生图，支持尺寸、质量、格式和风格预设。
 - 选中画布图片后作为参考图继续生成。
 - Agent 可以把多图任务规划成可检查的 DAG，并支持失败重试。

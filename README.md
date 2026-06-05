@@ -1,22 +1,24 @@
-# GPT Image Canvas
+# VisiWeave
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-GPT Image Canvas is a local-first AI creative workspace for image and video generation. It combines a tldraw canvas, a Hono API, SQLite persistence, OpenAI-compatible image providers, Agent planning, and optional cloud backup so creators can generate, arrange, revisit, and export assets from one workstation.
+VisiWeave, also known as 织影, is a local-first AI visual workspace for weaving prompts, references, generated images, Agent plans, and videos into one editable canvas. It combines tldraw, a Hono API, SQLite persistence, OpenAI-compatible image providers, video provider adapters, Agent planning, and optional cloud backup so creators can generate, arrange, revisit, and export assets from one workstation.
 
 Current version: `v0.2.0`.
 
+The public product name is `VisiWeave / 织影`. Some package names, workspace filters, and local database filenames still use the historical `gpt-image-canvas` identifier for compatibility.
+
 ## Preview
 
-![GPT Image Canvas preview](docs/assets/app-preview.png)
+![VisiWeave preview](docs/assets/app-preview.png)
 
 ## Highlights
 
-- Infinite tldraw canvas for arranging generated images, references, and Agent plan nodes.
+- Infinite tldraw canvas for arranging generated images, references, and Agent plan nodes as a visual production board.
 - Manual prompt-to-image generation with size, quality, format, and style controls.
 - Reference-image generation from selected canvas images.
 - Agent planning for multi-image jobs, with inspectable DAG execution and retry support.
-- Creative Video and Video Library workflows for text-to-video jobs and saved video assets.
+- Creative Video and Video Library workflows for text-to-video jobs and saved local video assets.
 - Image provider configuration from `.env`, local in-app settings, or Codex login fallback.
 - Video provider configuration for keyframe image video, Grok Imagine, and custom HTTP/OpenAI-compatible video gateways.
 - Local SQLite history for projects, generated assets, provider settings, Agent settings, and optional Tencent Cloud COS backup state.
