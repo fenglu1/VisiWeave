@@ -556,7 +556,7 @@ function videoProviderConfigViewForKind(
     interpolation,
     configured,
     supportsTextToVideo: configured && (kind === "keyframe-image" || kind === "grok-imagine" || Boolean(baseUrl || textToVideoUrl)),
-    supportsImageToVideo: configured && kind === "custom-http" && Boolean(baseUrl || imageToVideoUrl),
+    supportsImageToVideo: configured && (kind === "grok-imagine" || (kind === "custom-http" && Boolean(baseUrl || imageToVideoUrl))),
     source
   };
 }

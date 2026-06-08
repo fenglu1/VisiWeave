@@ -2,6 +2,7 @@ import type { VideoProviderStatus } from "@gpt-image-canvas/shared";
 import {
   canSelectVideoMode,
   creativeVideoHeroCopyKeys,
+  durationPresetsForProvider,
   nextVideoModeForProviderStatus,
   shouldShowReferencePicker,
   videoProviderStatusUrl
@@ -11,7 +12,8 @@ const grokStatus: VideoProviderStatus = {
   id: "grok-imagine",
   configured: true,
   supportsTextToVideo: true,
-  supportsImageToVideo: false
+  supportsImageToVideo: true,
+  durationPresets: [5, 10, 15]
 };
 
 const customImageOnlyStatus: VideoProviderStatus = {
@@ -21,9 +23,11 @@ const customImageOnlyStatus: VideoProviderStatus = {
   supportsImageToVideo: true
 };
 
-expect(nextVideoModeForProviderStatus(grokStatus, "image_to_video") === "text_to_video", "Grok Imagine falls back to text-to-video");
-expect(canSelectVideoMode(grokStatus, "image_to_video") === false, "Grok Imagine image-to-video mode is not selectable");
-expect(shouldShowReferencePicker(grokStatus, "image_to_video") === false, "unsupported image-to-video hides reference picker");
+expect(nextVideoModeForProviderStatus(grokStatus, "image_to_video") === "image_to_video", "Grok Imagine keeps supported image-to-video mode");
+expect(canSelectVideoMode(grokStatus, "image_to_video") === true, "Grok Imagine image-to-video mode is selectable");
+expect(shouldShowReferencePicker(grokStatus, "image_to_video") === true, "supported Grok image-to-video shows reference picker");
+expect(JSON.stringify(durationPresetsForProvider(grokStatus)) === JSON.stringify([5, 10, 15]), "Grok Imagine duration choices honor provider presets");
+expect(JSON.stringify(durationPresetsForProvider(customImageOnlyStatus)) === JSON.stringify([5, 10, 15, 20, 30]), "providers without duration presets use the shared video defaults");
 expect(creativeVideoHeroCopyKeys(grokStatus).title === "videoGrokImagineTitle", "Grok Imagine copy is selected from the active provider status");
 expect(nextVideoModeForProviderStatus(customImageOnlyStatus, "text_to_video") === "image_to_video", "image-only providers can keep image-to-video available");
 expect(shouldShowReferencePicker(customImageOnlyStatus, "image_to_video") === true, "supported image-to-video shows reference picker");

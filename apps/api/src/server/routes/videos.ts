@@ -49,6 +49,15 @@ export function registerVideoRoutes(app: Hono): void {
         )
       );
     }
+    if (
+      configuredProvider.status.durationPresets &&
+      !configuredProvider.status.durationPresets.includes(parsed.value.durationSeconds)
+    ) {
+      return c.json(
+        errorResponse("invalid_video_duration", "The configured video provider does not support this duration."),
+        400
+      );
+    }
 
     try {
       return c.json(await runVideoGeneration(parsed.value, configuredProvider.provider));

@@ -27,6 +27,7 @@ const MAX_PROVIDER_VIDEO_DOWNLOAD_REDIRECTS = 5;
 const PROVIDER_VIDEO_DOWNLOAD_RETRY_DELAY_MS = 1_000;
 const GROK_IMAGINE_PROVIDER_KIND = "grok-imagine";
 const GROK_IMAGINE_DEFAULT_VIDEO_MODEL = "grok-imagine-video";
+const GROK_IMAGINE_DURATION_PRESETS = [5, 10, 15] as const;
 let cachedWindowsSystemProxyUrl: string | undefined;
 
 export type VideoProviderErrorCode =
@@ -393,7 +394,8 @@ function localVideoProviderStatus(localConfig: NonNullable<ReturnType<typeof get
       id: GROK_IMAGINE_PROVIDER_KIND,
       configured,
       supportsTextToVideo: configured,
-      supportsImageToVideo: false,
+      supportsImageToVideo: configured,
+      durationPresets: [...GROK_IMAGINE_DURATION_PRESETS],
       message: configured
         ? "Local Grok Imagine video provider is configured."
         : "Set a Grok Imagine base URL and API key to enable video generation."
@@ -420,7 +422,8 @@ function envGrokImagineStatus(): VideoProviderStatus {
     id: config.id,
     configured,
     supportsTextToVideo: configured,
-    supportsImageToVideo: false,
+    supportsImageToVideo: configured,
+    durationPresets: [...GROK_IMAGINE_DURATION_PRESETS],
     message: configured
       ? "Grok Imagine video provider is configured."
       : "Set VIDEO_PROVIDER_URL and VIDEO_PROVIDER_API_KEY to enable Grok Imagine video generation."
@@ -504,10 +507,10 @@ class GrokImagineVideoProvider implements VideoProvider {
   }
 
   async generate(input: VideoProviderInput, signal?: AbortSignal): Promise<VideoProviderOutput> {
-    if (input.mode === "image_to_video") {
+    if (input.mode === "image_to_video" && !input.referenceAsset) {
       throw new VideoProviderError(
-        "unsupported_video_mode",
-        "The Grok Imagine video provider currently supports text-to-video only.",
+        "unsupported_provider_behavior",
+        "Grok Imagine image-to-video requires a source image.",
         400
       );
     }
@@ -519,7 +522,7 @@ class GrokImagineVideoProvider implements VideoProvider {
     });
 
     const deadline = Date.now() + this.config.timeoutMs;
-    const endpoint = grokImagineEndpointForBaseUrl(this.config.baseUrl);
+    const endpoint = grokImagineEndpointForInput(this.config.baseUrl, input);
     const response = await fetchWithTimeout(
       endpoint.createUrl,
       {
@@ -1177,7 +1180,7 @@ async function pollGrokImagineVideoTask(
   throw new VideoProviderError("upstream_failure", "Grok Imagine video task timed out.", 504);
 }
 
-type GrokImagineEndpointProtocol = "legacy-videos" | "newapi-video-generations" | "open-video-generations";
+type GrokImagineEndpointProtocol = "legacy-videos" | "newapi-video-generations" | "open-video-generations" | "xai-video-generations";
 
 interface GrokImagineEndpoint {
   protocol: GrokImagineEndpointProtocol;
@@ -1217,6 +1220,20 @@ function grokImagineEndpointForBaseUrl(baseUrl: string): GrokImagineEndpoint {
     protocol: "legacy-videos",
     baseUrl: apiBaseUrl,
     createUrl: joinProviderPath(apiBaseUrl, "videos"),
+    statusPath: "videos"
+  };
+}
+
+function grokImagineEndpointForInput(baseUrl: string, input: VideoProviderInput): GrokImagineEndpoint {
+  const endpoint = grokImagineEndpointForBaseUrl(baseUrl);
+  if (input.mode !== "image_to_video") {
+    return endpoint;
+  }
+
+  return {
+    protocol: "xai-video-generations",
+    baseUrl: endpoint.baseUrl,
+    createUrl: joinProviderPath(endpoint.baseUrl, "videos/generations"),
     statusPath: "videos"
   };
 }
@@ -1287,6 +1304,17 @@ function grokImagineCreateRequestBody(
   input: VideoProviderInput,
   videoModel: string
 ): Record<string, unknown> {
+  if (protocol === "xai-video-generations") {
+    return {
+      prompt: input.prompt,
+      model: videoModel,
+      image: {
+        url: input.referenceAsset?.dataUrl
+      },
+      duration: input.durationSeconds
+    };
+  }
+
   if (protocol === "open-video-generations") {
     return {
       prompt: input.prompt,

@@ -226,11 +226,18 @@ export function CreativeVideoPage({
     : providerError || providerUnavailableMessage(providerStatus, mode, t);
   const showKeyframeProviderNote = isKeyframeProviderStatus(providerStatus);
   const heroCopy = creativeVideoHeroCopyKeys(providerStatus);
+  const durationPresets = useMemo(() => durationPresetsForProvider(providerStatus), [providerStatus]);
   const canSubmit =
     prompt.trim().length > 0 &&
     !submitting &&
     providerReady &&
     (mode === "text_to_video" || selectedReferenceAssetId.trim().length > 0);
+
+  useEffect(() => {
+    if (!durationPresets.includes(durationSeconds)) {
+      setDurationSeconds(durationPresets[0] ?? DEFAULT_VIDEO_DURATION_SECONDS);
+    }
+  }, [durationPresets, durationSeconds]);
 
   async function submitVideo(): Promise<void> {
     if (!providerReady) {
@@ -427,7 +434,7 @@ export function CreativeVideoPage({
               <fieldset className="video-choice-group">
                 <legend>{t("videoDurationLabel")}</legend>
                 <div className="video-segmented">
-                  {VIDEO_DURATION_PRESETS.map((duration) => (
+                  {durationPresets.map((duration) => (
                     <button
                       aria-pressed={durationSeconds === duration}
                       className="video-pill-button"
@@ -745,8 +752,13 @@ function isVideoProviderStatusResponse(value: unknown): value is VideoProviderSt
     typeof provider.configured === "boolean" &&
     typeof provider.supportsTextToVideo === "boolean" &&
     typeof provider.supportsImageToVideo === "boolean" &&
+    (provider.durationPresets === undefined || isVideoDurationPresetArray(provider.durationPresets)) &&
     (provider.message === undefined || typeof provider.message === "string")
   );
+}
+
+function isVideoDurationPresetArray(value: unknown): value is VideoDurationPreset[] {
+  return Array.isArray(value) && value.every((duration) => VIDEO_DURATION_PRESETS.includes(duration as VideoDurationPreset));
 }
 
 function isVideoMode(value: unknown): value is VideoMode {
@@ -836,6 +848,10 @@ export function nextVideoModeForProviderStatus(provider: VideoProviderStatus | n
 
 export function canSelectVideoMode(provider: VideoProviderStatus | null, mode: VideoMode): boolean {
   return !provider || isModeSupported(provider, mode);
+}
+
+export function durationPresetsForProvider(provider: VideoProviderStatus | null): VideoDurationPreset[] {
+  return provider?.durationPresets?.length ? provider.durationPresets : [...VIDEO_DURATION_PRESETS];
 }
 
 export function shouldShowReferencePicker(provider: VideoProviderStatus | null, mode: VideoMode): boolean {

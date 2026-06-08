@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { VideoGenerationJobResponse, VideoLibraryResponse } from "../domain/contracts.js";
@@ -58,6 +58,11 @@ async function main(): Promise<void> {
     expect(providerStatus.id === "grok-imagine", "configured video provider uses Grok Imagine");
     expect(providerStatus.configured === true, "Grok Imagine video provider is configured");
     expect(providerStatus.supportsTextToVideo === true, "Grok Imagine video provider supports text-to-video");
+    expect(providerStatus.supportsImageToVideo === true, "Grok Imagine video provider supports image-to-video");
+    expect(
+      JSON.stringify(providerStatus.durationPresets) === JSON.stringify([5, 10, 15]),
+      "Grok Imagine video provider exposes official-compatible duration presets"
+    );
 
     const app = createApp();
     const activeConfig = getProviderConfig();
@@ -271,6 +276,47 @@ async function main(): Promise<void> {
     );
     expect(futureppoCompleted.job.outputs[0]?.providerJobId === "task-smoke-futureppo-grok-imagine", "futureppo output exposes the remote task id");
 
+    const referenceAssetId = await createGeneratedImageAsset();
+    const futureppoImageCreated = await app.request("/api/videos/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: "Animate the lanterns with a slow dolly push",
+        mode: "image_to_video",
+        durationSeconds: 15,
+        aspectRatio: "16:9",
+        referenceAssetId,
+        providerKind: "grok-imagine"
+      })
+    });
+    expect(futureppoImageCreated.status === 200, `futureppo image-to-video request succeeds, got ${futureppoImageCreated.status}`);
+    const futureppoImageCreatedBody = (await futureppoImageCreated.json()) as VideoGenerationJobResponse;
+    const futureppoImageCompleted = await waitForVideoJob(app, futureppoImageCreatedBody.job.id, () => `upstream calls: ${JSON.stringify(upstream.calls)}`);
+    expect(
+      futureppoImageCompleted.job.status === "succeeded",
+      `futureppo image-to-video job succeeds; error: ${futureppoImageCompleted.job.error ?? "none"}; ${JSON.stringify(upstream.calls)}`
+    );
+    expect(futureppoImageCompleted.job.mode === "image_to_video", "futureppo image-to-video job records image-to-video mode");
+    expect(futureppoImageCompleted.job.referenceAssetId === referenceAssetId, "futureppo image-to-video job records the source image asset");
+    expect(futureppoImageCompleted.job.outputs[0]?.providerJobId === "task-smoke-futureppo-grok-image", "futureppo image-to-video output exposes the remote task id");
+
+    const unsupportedDuration = await app.request("/api/videos/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: "This should not reach the Grok upstream",
+        mode: "text_to_video",
+        durationSeconds: 20,
+        aspectRatio: "16:9",
+        providerKind: "grok-imagine"
+      })
+    });
+    expect(unsupportedDuration.status === 400, `Grok duration outside provider presets is rejected, got ${unsupportedDuration.status}`);
+
     const libraryResponse = await app.request("/api/videos");
     expect(libraryResponse.status === 200, "video library request succeeds");
     const library = (await libraryResponse.json()) as VideoLibraryResponse;
@@ -294,7 +340,9 @@ async function main(): Promise<void> {
     expect(upstream.calls.apimartStatus >= 1, "provider polls APIMart relay task status");
     expect(upstream.calls.futureppoCreate === 1, "provider posts one futureppo openai-video create request");
     expect(upstream.calls.futureppoStatus >= 1, "provider polls futureppo openai-video status");
-    expect(downloadProxy.calls.download === 12, "provider retries transient video downloads through environment proxy settings");
+    expect(upstream.calls.futureppoImageCreate === 1, "provider posts one futureppo image-to-video create request");
+    expect(upstream.calls.futureppoImageStatus >= 1, "provider polls futureppo image-to-video status");
+    expect(downloadProxy.calls.download === 14, "provider retries transient video downloads through environment proxy settings");
     expect(downloadProxy.calls.leakedAuthorization === 0, "provider does not forward API bearer auth to external video download URLs");
 
     console.log("grok imagine video provider smoke checks passed");
@@ -353,6 +401,8 @@ async function startFakeGrokImagineServer(): Promise<{
     apimartStatus: number;
     futureppoCreate: number;
     futureppoStatus: number;
+    futureppoImageCreate: number;
+    futureppoImageStatus: number;
   };
   close: () => Promise<void>;
 }> {
@@ -366,7 +416,9 @@ async function startFakeGrokImagineServer(): Promise<{
     apimartCreate: 0,
     apimartStatus: 0,
     futureppoCreate: 0,
-    futureppoStatus: 0
+    futureppoStatus: 0,
+    futureppoImageCreate: 0,
+    futureppoImageStatus: 0
   };
 
   const server = createServer(async (request, response) => {
@@ -537,6 +589,23 @@ async function startFakeGrokImagineServer(): Promise<{
         return;
       }
 
+      if (request.method === "POST" && request.url === "/futureppo/v1/videos/generations") {
+        calls.futureppoImageCreate += 1;
+        expectBearerAuth(request);
+        const body = await readJson(request);
+        expect(body.model === "grok-imagine-video", "futureppo image-to-video request includes configured model");
+        expect(body.prompt === "Animate the lanterns with a slow dolly push", "futureppo image-to-video request includes prompt");
+        expect(body.duration === 15, "futureppo image-to-video request sends official numeric duration");
+        expect(isRecord(body.image), "futureppo image-to-video request includes official image object");
+        expect(typeof body.image.url === "string", "futureppo image-to-video image object includes a URL");
+        expect(body.image.url.startsWith("data:image/png;base64,"), "futureppo image-to-video sends the generated image as a data URL");
+        expect(!Object.hasOwn(body, "reference_images"), "futureppo image-to-video does not mix reference_images with the source image");
+        writeJson(response, 200, {
+          request_id: "task-smoke-futureppo-grok-image"
+        });
+        return;
+      }
+
       if (request.method === "GET" && request.url === "/futureppo/v1/videos/task-smoke-futureppo-grok-imagine") {
         calls.futureppoStatus += 1;
         expectBearerAuth(request);
@@ -546,6 +615,21 @@ async function startFakeGrokImagineServer(): Promise<{
           progress: 100,
           video: {
             url: fakeDownloadUrl
+          }
+        });
+        return;
+      }
+
+      if (request.method === "GET" && request.url === "/futureppo/v1/videos/task-smoke-futureppo-grok-image") {
+        calls.futureppoImageStatus += 1;
+        expectBearerAuth(request);
+        writeJson(response, 200, {
+          request_id: "task-smoke-futureppo-grok-image",
+          status: "done",
+          progress: 100,
+          video: {
+            url: fakeDownloadUrl,
+            duration: 15
           }
         });
         return;
@@ -689,6 +773,60 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
     "Content-Length": String(payload.length)
   });
   response.end(payload);
+}
+
+async function createGeneratedImageAsset(): Promise<string> {
+  const { db } = await import("../infrastructure/database.js");
+  const { runtimePaths } = await import("../infrastructure/runtime.js");
+  const { assets, generationOutputs, generationRecords } = await import("../infrastructure/schema.js");
+  const now = new Date().toISOString();
+  const generationId = randomUUID();
+  const outputId = randomUUID();
+  const assetId = randomUUID();
+  const fileName = `${assetId}.png`;
+
+  await writeFile(resolve(runtimePaths.assetsDir, fileName), Buffer.from("fake png bytes", "utf8"));
+  db.insert(assets)
+    .values({
+      id: assetId,
+      fileName,
+      relativePath: `assets/${fileName}`,
+      mimeType: "image/png",
+      width: 1280,
+      height: 720,
+      createdAt: now
+    })
+    .run();
+  db.insert(generationRecords)
+    .values({
+      id: generationId,
+      mode: "generate",
+      prompt: "A still frame of warm lanterns above a quiet street",
+      effectivePrompt: "A still frame of warm lanterns above a quiet street",
+      presetId: "video-16-9",
+      width: 1280,
+      height: 720,
+      quality: "auto",
+      outputFormat: "png",
+      count: 1,
+      status: "succeeded",
+      error: null,
+      referenceAssetId: null,
+      createdAt: now
+    })
+    .run();
+  db.insert(generationOutputs)
+    .values({
+      id: outputId,
+      generationId,
+      status: "succeeded",
+      assetId,
+      error: null,
+      createdAt: now
+    })
+    .run();
+
+  return assetId;
 }
 
 function delay(ms: number): Promise<void> {

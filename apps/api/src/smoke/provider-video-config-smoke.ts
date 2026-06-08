@@ -131,6 +131,8 @@ async function main(): Promise<void> {
   expect(grokSaved.video.kind === "grok-imagine", "grok imagine video kind is returned");
   expect(grokSaved.video.baseUrl === "https://video-provider.example.com/v1", "grok imagine base URL is trimmed");
   expect(grokSaved.video.videoModel === "grok-imagine-video", "grok imagine video model is trimmed and returned");
+  expect(grokSaved.video.supportsTextToVideo === true, "grok imagine config reports text-to-video support");
+  expect(grokSaved.video.supportsImageToVideo === true, "grok imagine config reports image-to-video support");
   expect(grokSaved.video.apiKey.hasSecret === true, "grok imagine API key is masked");
   expect(!JSON.stringify(grokSaved).includes("test-grok-config-key"), "grok imagine API key is never exposed");
   expect(grokSaved.videoConfigs["custom-http"].baseUrl === "https://video-2.example.test/v1/generate", "saving grok keeps custom HTTP base URL");

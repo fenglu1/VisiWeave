@@ -79,6 +79,7 @@ export interface VideoProviderStatus {
   configured: boolean;
   supportsTextToVideo: boolean;
   supportsImageToVideo: boolean;
+  durationPresets?: VideoDurationPreset[];
   message?: string;
 }
 
