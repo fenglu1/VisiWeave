@@ -5,6 +5,7 @@ import type {
   VideoProviderKind,
   VideoProviderStatus
 } from "../../domain/contracts.js";
+import { loggedProviderFetch, type ProviderRequestLogContext } from "../../domain/request-logs/request-log-store.js";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { execFileSync } from "node:child_process";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
@@ -476,6 +477,7 @@ class CustomHttpVideoProvider implements VideoProvider {
     const deadline = Date.now() + this.config.timeoutMs;
     const apiBaseUrl = grok2ApiVideoApiBaseUrl(baseUrl);
     const createUrl = grok2ApiVideoCreateUrl(apiBaseUrl);
+    const requestLog = videoRequestLogContext(input.mode, this.config.id);
     const response = await fetchWithTimeout(
       createUrl,
       {
@@ -484,7 +486,8 @@ class CustomHttpVideoProvider implements VideoProvider {
         body: grok2ApiVideoFormData(input, this.config.videoModel),
         signal
       },
-      remainingTimeoutMs(deadline)
+      remainingTimeoutMs(deadline),
+      requestLog
     );
 
     if (!response.ok) {
@@ -495,7 +498,7 @@ class CustomHttpVideoProvider implements VideoProvider {
       );
     }
 
-    return readProviderVideoResponse(response, signal, this.config, deadline, apiBaseUrl);
+    return readProviderVideoResponse(response, signal, this.config, deadline, apiBaseUrl, requestLog);
   }
 }
 
@@ -523,6 +526,7 @@ class GrokImagineVideoProvider implements VideoProvider {
 
     const deadline = Date.now() + this.config.timeoutMs;
     const endpoint = grokImagineEndpointForInput(this.config.baseUrl, input);
+    const requestLog = videoRequestLogContext(input.mode, this.config.id);
     const response = await fetchWithTimeout(
       endpoint.createUrl,
       {
@@ -531,7 +535,8 @@ class GrokImagineVideoProvider implements VideoProvider {
         body: JSON.stringify(grokImagineCreateRequestBody(endpoint.protocol, input, this.config.videoModel)),
         signal
       },
-      remainingTimeoutMs(deadline)
+      remainingTimeoutMs(deadline),
+      requestLog
     );
 
     if (!response.ok) {
@@ -570,7 +575,7 @@ class GrokImagineVideoProvider implements VideoProvider {
     return pollGrokImagineVideoTask({
       taskId,
       statusUrl: grokImagineStatusUrl(endpoint, taskId)
-    }, input, signal, this.config, deadline);
+    }, input, signal, this.config, deadline, requestLog);
   }
 }
 
@@ -742,7 +747,20 @@ function requestHeaders(
   return headers;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+function videoRequestLogContext(mode: VideoGenerationMode, providerKind: string): ProviderRequestLogContext {
+  return {
+    service: "video",
+    category: mode === "image_to_video" ? "image_to_video" : "text_to_video",
+    providerKind
+  };
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  requestLog?: ProviderRequestLogContext
+): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   const upstreamSignal = init.signal;
@@ -757,9 +775,10 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   }
 
   try {
-    return await fetch(url, {
+    return await loggedProviderFetch(url, {
       ...init,
-      signal: controller.signal
+      signal: controller.signal,
+      requestLog
     });
   } catch (error) {
     if (isAbortError(error)) {
@@ -780,11 +799,12 @@ async function readProviderVideoResponse(
   signal: AbortSignal | undefined,
   config: CustomHttpVideoProviderConfig,
   deadline: number,
-  baseUrl: string
+  baseUrl: string,
+  requestLog?: ProviderRequestLogContext
 ): Promise<VideoProviderOutput> {
   const contentType = mediaType(response.headers.get("content-type"));
   if (contentType === "application/json") {
-    return readProviderVideoJson(response, signal, config, deadline, baseUrl);
+    return readProviderVideoJson(response, signal, config, deadline, baseUrl, requestLog);
   }
 
   if (!isVideoMimeType(contentType)) {
@@ -807,7 +827,8 @@ async function readProviderVideoJson(
   signal: AbortSignal | undefined,
   config: CustomHttpVideoProviderConfig,
   deadline: number,
-  baseUrl: string
+  baseUrl: string,
+  requestLog?: ProviderRequestLogContext
 ): Promise<VideoProviderOutput> {
   const body = await response.json();
   const payload = firstVideoPayload(body);
@@ -821,7 +842,7 @@ async function readProviderVideoJson(
 
   const providerJob = providerJobFromJson(body, payload, config, baseUrl);
   if (providerJob) {
-    return pollProviderVideoJob(providerJob, signal, config, deadline);
+    return pollProviderVideoJob(providerJob, signal, config, deadline, requestLog);
   }
 
   throw new VideoProviderError(
@@ -996,7 +1017,8 @@ async function pollProviderVideoJob(
   },
   signal: AbortSignal | undefined,
   config: CustomHttpVideoProviderConfig,
-  deadline: number
+  deadline: number,
+  requestLog?: ProviderRequestLogContext
 ): Promise<VideoProviderOutput> {
   while (Date.now() < deadline) {
     await delay(config.pollIntervalMs, signal);
@@ -1052,7 +1074,7 @@ async function pollProviderVideoJob(
       );
     }
     if (isSuccessStatus(status)) {
-      return downloadGrok2ApiVideoContent(job.apiBaseUrl, job.providerJobId, signal, config, deadline);
+      return downloadGrok2ApiVideoContent(job.apiBaseUrl, job.providerJobId, signal, config, deadline, requestLog);
     }
   }
 
@@ -1064,7 +1086,8 @@ async function downloadGrok2ApiVideoContent(
   providerJobId: string,
   signal: AbortSignal | undefined,
   config: CustomHttpVideoProviderConfig,
-  deadline: number
+  deadline: number,
+  requestLog?: ProviderRequestLogContext
 ): Promise<VideoProviderOutput> {
   const response = await fetchWithTimeout(
     grok2ApiVideoContentUrl(apiBaseUrl, providerJobId),
@@ -1073,7 +1096,8 @@ async function downloadGrok2ApiVideoContent(
       headers: requestHeaders(config, { includeContentType: false }),
       signal
     },
-    remainingTimeoutMs(deadline)
+    remainingTimeoutMs(deadline),
+    requestLog
   );
   if (!response.ok) {
     throw new VideoProviderError(
@@ -1108,7 +1132,8 @@ async function pollGrokImagineVideoTask(
   input: VideoProviderInput,
   signal: AbortSignal | undefined,
   config: GrokImagineVideoProviderConfig,
-  deadline: number
+  deadline: number,
+  requestLog?: ProviderRequestLogContext
 ): Promise<VideoProviderOutput> {
   while (Date.now() < deadline) {
     await delay(config.pollIntervalMs, signal);
@@ -1120,7 +1145,8 @@ async function pollGrokImagineVideoTask(
         headers: requestHeaders(config, { includeContentType: false }),
         signal
       },
-      remainingTimeoutMs(deadline)
+      remainingTimeoutMs(deadline),
+      requestLog
     );
     if (!response.ok) {
       throw new VideoProviderError(

@@ -83,7 +83,9 @@ OPENAI_IMAGE_TIMEOUT_MS=1200000
 ```
 
 使用官方 OpenAI API 时留空 `OPENAI_BASE_URL`。如果使用其他 OpenAI 兼容服务，把它设置为兼容的 `/v1` 端点；如果该端点需要不同的图像模型名，修改 `OPENAI_IMAGE_MODEL`。
-`OPENAI_IMAGE_PROVIDER_FORMAT` 默认为 `newapi`；如果是 Sub2API 兼容生图端点，设置为 `sub2api`，应用会按流式事件解析最终图片。
+`OPENAI_IMAGE_PROVIDER_FORMAT` 默认为 `newapi`；如果是 Sub2API 兼容生图端点，设置为 `sub2api`，应用会按流式事件解析最终图片；如果是 Gemini `generateContent` 兼容端点，设置为 `gemini`。
+
+[img.hanhegufei.online](https://img.hanhegufei.online/) 是 Gemini `generateContent` 三方供应来源，最高支持原生 4K 生图。
 
 也可以打开右上角 provider 设置弹窗，保存一套本地 OpenAI 兼容配置。本地 key 会存储在 `DATA_DIR` 下的 SQLite 数据库中，读取时只返回掩码，并一直保留到你输入新 key 替换它。
 
@@ -303,3 +305,7 @@ MIT
 ## 友情链接
 
 - [LINUX DO](https://linux.do/)
+
+## 鸣谢
+
+感谢公益站 [api.futureppo.top](https://api.futureppo.top/) 和 [api.pie-xian.com](https://api.pie-xian.com/) 提供的视频生成服务和图片生成服务。

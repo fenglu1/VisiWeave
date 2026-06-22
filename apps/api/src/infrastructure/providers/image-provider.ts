@@ -3,12 +3,15 @@ import type { Image, ImageEditParamsNonStreaming, ImageGenerateParamsNonStreamin
 import {
   IMAGE_MODEL,
   IMAGE_PROVIDER_FORMATS,
+  type RequestLogCategory,
   type ImageProviderFormat,
+  type ImageProviderModelOption,
   type ImageQuality,
   type ImageSize,
   type OutputFormat,
   type ReferenceImageInput
 } from "../../domain/contracts.js";
+import { loggedProviderFetch, recordProviderRequestLog } from "../../domain/request-logs/request-log-store.js";
 
 export interface ImageProviderInput {
   originalPrompt: string;
@@ -63,10 +66,25 @@ export interface OpenAIImageProviderConfig {
   timeoutMs: number;
 }
 
+export interface GeminiImageModelListConfig {
+  apiKey: string;
+  baseURL?: string;
+  timeoutMs: number;
+}
+
 export const DEFAULT_OPENAI_IMAGE_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_PROVIDER_IMAGE_BYTES = 100 * 1024 * 1024;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
+const GEMINI_ASPECT_RATIOS = [
+  { value: "1:1", ratio: 1 },
+  { value: "16:9", ratio: 16 / 9 },
+  { value: "9:16", ratio: 9 / 16 },
+  { value: "3:2", ratio: 3 / 2 },
+  { value: "2:3", ratio: 2 / 3 },
+  { value: "4:3", ratio: 4 / 3 },
+  { value: "3:4", ratio: 3 / 4 }
+] as const;
 type RuntimeImageProviderFormat = ImageProviderFormat | "gemini";
 
 type FlexibleImageGenerateParams = Omit<ImageGenerateParamsNonStreaming, "size"> & {
@@ -79,13 +97,20 @@ type FlexibleImageEditParams = Omit<ImageEditParamsNonStreaming, "size"> & {
 
 interface GeminiGenerateContentRequest {
   contents: Array<{
-    role: "user";
     parts: GeminiPart[];
   }>;
-  generationConfig: {
-    responseModalities: ["TEXT", "IMAGE"];
-  };
+  generationConfig: GeminiGenerationConfig;
 }
+
+type GeminiImageResolution = "1K" | "2K" | "4K";
+type GeminiImageMode = "generate" | "edit";
+
+type GeminiGenerationConfig = {
+  responseModalities: ["TEXT", "IMAGE"];
+  imageConfig?: {
+    imageSize: GeminiImageResolution;
+  };
+} & Record<string, unknown>;
 
 type GeminiPart =
   | {
@@ -159,43 +184,71 @@ class OpenAIImageProvider implements ImageProvider {
   }
 
   async generate(input: ImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
+    const body = imageGenerateRequestBody({
+      model: this.config.model,
+      prompt: input.prompt,
+      size: input.sizeApiValue,
+      quality: input.quality,
+      output_format: input.outputFormat,
+      n: input.count
+    });
+    const startedAt = Date.now();
+    let requestLogged = false;
     try {
-      const response = await this.client.images.generate(
-        imageGenerateRequestBody({
-          model: this.config.model,
-          prompt: input.prompt,
-          size: input.sizeApiValue,
-          quality: input.quality,
-          output_format: input.outputFormat,
-          n: input.count
-        }),
-        { signal }
-      );
+      const response = await this.client.images.generate(body, { signal });
+      await recordOpenAICompatibleImageRequest(this.config, "text_to_image", "/images/generations", body, {
+        response,
+        startedAt
+      });
+      requestLogged = true;
 
       return await normalizeProviderResponse(response, input.sizeApiValue, this.config.model, signal);
     } catch (error) {
+      if (!requestLogged) {
+        await recordOpenAICompatibleImageRequest(this.config, "text_to_image", "/images/generations", body, {
+          error,
+          startedAt
+        });
+      }
       throw toProviderError(error);
     }
   }
 
   async edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
+    const requestBody = {
+      model: this.config.model,
+      image: input.referenceImages.map((referenceImage) => referenceImage.dataUrl),
+      prompt: input.prompt,
+      size: input.sizeApiValue,
+      quality: input.quality,
+      output_format: input.outputFormat,
+      n: input.count
+    };
+    const startedAt = Date.now();
+    let requestLogged = false;
     try {
       const references = await Promise.all(input.referenceImages.map((referenceImage) => dataUrlToFile(referenceImage)));
       const response = await this.client.images.edit(
         imageEditRequestBody({
-          model: this.config.model,
-          image: references,
-          prompt: input.prompt,
-          size: input.sizeApiValue,
-          quality: input.quality,
-          output_format: input.outputFormat,
-          n: input.count
+          ...requestBody,
+          image: references
         }),
         { signal }
       );
+      await recordOpenAICompatibleImageRequest(this.config, "image_to_image", "/images/edits", requestBody, {
+        response,
+        startedAt
+      });
+      requestLogged = true;
 
       return await normalizeProviderResponse(response, input.sizeApiValue, this.config.model, signal);
     } catch (error) {
+      if (!requestLogged) {
+        await recordOpenAICompatibleImageRequest(this.config, "image_to_image", "/images/edits", requestBody, {
+          error,
+          startedAt
+        });
+      }
       throw toProviderError(error);
     }
   }
@@ -290,7 +343,7 @@ class Sub2APIImageProvider implements ImageProvider {
   ): Promise<ProviderResult> {
     const timeout = timeoutSignal(init.signal, this.config.timeoutMs);
     try {
-      const response = await fetch(sub2ApiEndpoint(this.config.baseURL, path), {
+      const response = await loggedProviderFetch(sub2ApiEndpoint(this.config.baseURL, path), {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.config.apiKey}`,
@@ -298,7 +351,12 @@ class Sub2APIImageProvider implements ImageProvider {
           ...init.headers
         },
         body: init.body,
-        signal: timeout.signal
+        signal: timeout.signal,
+        requestLog: {
+          service: "image",
+          category: imageRequestCategoryForPath(path),
+          providerKind: "sub2api"
+        }
       }).catch((error: unknown) => {
         throw sub2ApiFetchFailureToProviderError(error);
       });
@@ -322,13 +380,13 @@ class GeminiImageProvider implements ImageProvider {
       {
         contents: [
           {
-            role: "user",
             parts: [{ text: input.prompt }]
           }
         ],
-        generationConfig: geminiGenerationConfig()
+        generationConfig: geminiGenerationConfig(input, "generate", this.config.model)
       },
       input.sizeApiValue,
+      "text_to_image",
       signal
     );
   }
@@ -338,28 +396,38 @@ class GeminiImageProvider implements ImageProvider {
       {
         contents: [
           {
-            role: "user",
             parts: [...input.referenceImages.map((referenceImage) => ({ inlineData: geminiInlineData(referenceImage) })), { text: input.prompt }]
           }
         ],
-        generationConfig: geminiGenerationConfig()
+        generationConfig: geminiGenerationConfig(input, "edit", this.config.model)
       },
       input.sizeApiValue,
+      "image_to_image",
       signal
     );
   }
 
-  private async post(body: GeminiGenerateContentRequest, sizeApiValue: string, signal?: AbortSignal): Promise<ProviderResult> {
+  private async post(
+    body: GeminiGenerateContentRequest,
+    sizeApiValue: string,
+    category: RequestLogCategory,
+    signal?: AbortSignal
+  ): Promise<ProviderResult> {
     const timeout = timeoutSignal(signal, this.config.timeoutMs);
     try {
-      const response = await fetch(geminiGenerateContentEndpoint(this.config.baseURL, this.config.model), {
+      const response = await loggedProviderFetch(geminiGenerateContentEndpoint(this.config.baseURL, this.config.model), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-goog-api-key": this.config.apiKey
         },
         body: JSON.stringify(body),
-        signal: timeout.signal
+        signal: timeout.signal,
+        requestLog: {
+          service: "image",
+          category,
+          providerKind: "gemini"
+        }
       }).catch((error: unknown) => {
         throw geminiFetchFailureToProviderError(error);
       });
@@ -384,6 +452,33 @@ class GeminiImageProvider implements ImageProvider {
   }
 }
 
+export async function listGeminiImageModels(
+  config: GeminiImageModelListConfig,
+  signal?: AbortSignal
+): Promise<ImageProviderModelOption[]> {
+  const timeout = timeoutSignal(signal, config.timeoutMs);
+  try {
+    const response = await fetch(geminiModelsEndpoint(config.baseURL), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "x-goog-api-key": config.apiKey
+      },
+      signal: timeout.signal
+    }).catch((error: unknown) => {
+      throw geminiFetchFailureToProviderError(error);
+    });
+
+    if (!response.ok) {
+      throw await geminiHttpProviderError(response);
+    }
+
+    return await readGeminiProviderModels(response);
+  } finally {
+    timeout.cleanup();
+  }
+}
+
 function imageGenerateRequestBody(body: FlexibleImageGenerateParams): ImageGenerateParamsNonStreaming {
   // The SDK's image size union can lag gpt-image-2's documented flexible-size support.
   return body as unknown as ImageGenerateParamsNonStreaming;
@@ -394,10 +489,205 @@ function imageEditRequestBody(body: FlexibleImageEditParams): ImageEditParamsNon
   return body as unknown as ImageEditParamsNonStreaming;
 }
 
-function geminiGenerationConfig(): GeminiGenerateContentRequest["generationConfig"] {
+async function recordOpenAICompatibleImageRequest(
+  config: OpenAIImageProviderConfig,
+  category: RequestLogCategory,
+  path: string,
+  requestBody: unknown,
+  result: {
+    error?: unknown;
+    response?: ImagesResponse;
+    startedAt: number;
+  }
+): Promise<void> {
+  await recordProviderRequestLog({
+    service: "image",
+    category,
+    providerKind: imageProviderFormat(config),
+    method: "POST",
+    url: openAICompatibleImageEndpoint(config.baseURL, path),
+    requestHeaders: {
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    requestBody,
+    responseStatus: result.response ? 200 : undefined,
+    responseBodyPreview: result.response ? imageResponsePreview(result.response) : undefined,
+    error: result.error ? providerLogErrorMessage(result.error) : undefined,
+    durationMs: Date.now() - result.startedAt
+  });
+}
+
+function imageResponsePreview(response: ImagesResponse): unknown {
   return {
+    created: "created" in response ? response.created : undefined,
+    data: Array.isArray(response.data)
+      ? response.data.map((item) => ({
+          b64_json: item.b64_json ? `[BASE64 chars=${item.b64_json.length}]` : undefined,
+          url: item.url
+        }))
+      : []
+  };
+}
+
+function openAICompatibleImageEndpoint(baseURL: string | undefined, path: string): string {
+  const base = (baseURL?.trim() || "https://api.openai.com/v1").replace(/\/+$/u, "");
+  return `${base}${path}`;
+}
+
+function imageRequestCategoryForPath(path: string): RequestLogCategory {
+  return path.includes("/edits") ? "image_to_image" : "text_to_image";
+}
+
+function providerLogErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error);
+}
+
+function geminiGenerationConfig(input: ImageProviderInput, mode: GeminiImageMode, model: string): GeminiGenerateContentRequest["generationConfig"] {
+  const imageSize = geminiResolutionForSize(input.size);
+  const baseConfig: GeminiGenerationConfig = {
     responseModalities: ["TEXT", "IMAGE"]
   };
+
+  if (isGeminiGptImage2Model(model)) {
+    return withGeminiImageConfig(
+      {
+        ...baseConfig,
+        size: geminiSizeForSize(input.size),
+        quality: geminiGptImage2Quality(input.quality, mode)
+      },
+      imageSize
+    );
+  }
+
+  if (isGeminiGptImageModel(model)) {
+    return withGeminiImageConfig(
+      {
+        ...baseConfig,
+        size: geminiSizeForSize(input.size),
+        quality: geminiGptImageQuality(input.quality)
+      },
+      imageSize
+    );
+  }
+
+  if (usesGeminiSizeParam(model)) {
+    return withGeminiImageConfig(
+      {
+        ...baseConfig,
+        size: geminiSizeForSize(input.size)
+      },
+      imageSize
+    );
+  }
+
+  if (usesGeminiPixelResolutionParam(model)) {
+    return withGeminiImageConfig(
+      {
+        ...baseConfig,
+        resolution: geminiSizeForSize(input.size)
+      },
+      imageSize
+    );
+  }
+
+  return withGeminiImageConfig(
+    {
+      ...baseConfig,
+      aspect_ratio: geminiAspectRatioForSize(input.size),
+      resolution: imageSize
+    },
+    imageSize
+  );
+}
+
+function withGeminiImageConfig(config: GeminiGenerationConfig, imageSize: GeminiImageResolution): GeminiGenerationConfig {
+  return {
+    ...config,
+    imageConfig: {
+      imageSize
+    }
+  };
+}
+
+function geminiSizeForSize(size: ImageSize): string {
+  return `${size.width}*${size.height}`;
+}
+
+function geminiGptImage2Quality(quality: ImageQuality, mode: GeminiImageMode): ImageQuality {
+  if (mode === "edit" && quality === "high") {
+    return "medium";
+  }
+  if (mode === "generate" && quality === "high") {
+    return "auto";
+  }
+  return quality;
+}
+
+function geminiGptImageQuality(quality: ImageQuality): ImageQuality {
+  return quality === "high" ? "auto" : quality;
+}
+
+function isGeminiGptImage2Model(model: string): boolean {
+  return geminiModelId(model) === "gpt-image-2" || geminiModelId(model) === "openai/gpt-image-2";
+}
+
+function isGeminiGptImageModel(model: string): boolean {
+  const modelId = geminiModelId(model);
+  return modelId === "gpt-image-1" || modelId === "gpt-image-1-5" || modelId === "openai/gpt-image-1" || modelId === "openai/gpt-image-1-5";
+}
+
+function usesGeminiSizeParam(model: string): boolean {
+  const provider = geminiModelProvider(model);
+  return provider === "seedream" || provider === "recraft";
+}
+
+function usesGeminiPixelResolutionParam(model: string): boolean {
+  return geminiModelProvider(model) === "ideogram";
+}
+
+function geminiModelProvider(model: string): string {
+  return geminiModelId(model).split("/")[0] ?? "";
+}
+
+function geminiModelId(model: string): string {
+  return model.trim().toLowerCase().replace(/^models\//u, "");
+}
+
+function geminiAspectRatioForSize(size: ImageSize): string {
+  const ratio = size.width / size.height;
+  const nearest = GEMINI_ASPECT_RATIOS.map((candidate) => ({
+    ...candidate,
+    distance: Math.abs(candidate.ratio - ratio) / candidate.ratio
+  })).sort((left, right) => left.distance - right.distance)[0];
+
+  if (nearest && nearest.distance <= 0.03) {
+    return nearest.value;
+  }
+
+  const divisor = greatestCommonDivisor(size.width, size.height);
+  return `${Math.round(size.width / divisor)}:${Math.round(size.height / divisor)}`;
+}
+
+function geminiResolutionForSize(size: ImageSize): GeminiImageResolution {
+  const longestSide = Math.max(size.width, size.height);
+  if (longestSide >= 3840) {
+    return "4K";
+  }
+  if (longestSide >= 2048) {
+    return "2K";
+  }
+  return "1K";
+}
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = Math.abs(Math.round(left));
+  let b = Math.abs(Math.round(right));
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a || 1;
 }
 
 function geminiInlineData(input: ReferenceImageInput): GeminiInlineData {
@@ -453,6 +743,58 @@ async function readGeminiProviderImages(response: Response): Promise<ProviderIma
   }
 
   return images;
+}
+
+async function readGeminiProviderModels(response: Response): Promise<ImageProviderModelOption[]> {
+  let json: unknown;
+  try {
+    json = (await response.json()) as unknown;
+  } catch {
+    return [];
+  }
+
+  const record = objectValue(json);
+  if (record?.ok === false) {
+    throw new ProviderError("upstream_failure", stringRecordValue(record, "message") ?? "Gemini model listing failed.", 502);
+  }
+
+  const rawModels = Array.isArray(record?.models) ? record.models : Array.isArray(record?.data) ? record.data : [];
+  const models: ImageProviderModelOption[] = [];
+  const seen = new Set<string>();
+
+  for (const rawModel of rawModels) {
+    const model = objectValue(rawModel);
+    if (!model || !modelIsImageModel(model) || !modelSupportsGenerateContent(model)) {
+      continue;
+    }
+
+    const rawId = stringRecordValue(model, "name") ?? stringRecordValue(model, "id");
+    const id = rawId?.replace(/^models\//u, "");
+    if (!id || seen.has(id)) {
+      continue;
+    }
+
+    seen.add(id);
+    models.push({
+      id,
+      displayName: stringRecordValue(model, "displayName") ?? stringRecordValue(model, "display_name") ?? id
+    });
+  }
+
+  return models;
+}
+
+function modelIsImageModel(model: Record<string, unknown>): boolean {
+  const type = stringRecordValue(model, "type");
+  return !type || type === "image";
+}
+
+function modelSupportsGenerateContent(model: Record<string, unknown>): boolean {
+  const methods =
+    arrayStringRecordValue(model, "supportedGenerationMethods") ??
+    arrayStringRecordValue(model, "supported_actions") ??
+    arrayStringRecordValue(model, "supportedActions");
+  return !methods || methods.includes("generateContent");
 }
 
 function toProviderError(error: unknown): Error {
@@ -705,6 +1047,19 @@ async function extractSub2APIImagesFromEvent(record: Record<string, unknown>, si
     }
   }
 
+  const dataItems = Array.isArray(record.data) ? record.data : [record.data];
+  for (const dataItem of dataItems) {
+    const dataRecord = objectValue(dataItem);
+    if (!dataRecord) {
+      continue;
+    }
+
+    const dataImage = await providerImageFromFlexibleRecord(dataRecord, signal);
+    if (dataImage) {
+      images.push(dataImage);
+    }
+  }
+
   return images;
 }
 
@@ -813,7 +1168,7 @@ function withSub2APIEventName(event: unknown, eventName: string): unknown {
 }
 
 function sub2ApiTerminalEvent(record: Record<string, unknown>): boolean {
-  const eventType = stringRecordValue(record, "type");
+  const eventType = stringRecordValue(record, "type") ?? stringRecordValue(record, "object");
   return eventType === "image_generation.completed" || eventType === "response.completed" || eventType === "response.done";
 }
 
@@ -902,8 +1257,31 @@ function sub2ApiEndpoint(baseURL: string | undefined, path: string): string {
 }
 
 function geminiGenerateContentEndpoint(baseURL: string | undefined, model: string): string {
+  const normalizedBaseURL = normalizeGeminiBaseURL(baseURL);
+  return `${normalizedBaseURL}/models/${geminiGenerateContentModelPath(model)}:generateContent`;
+}
+
+function geminiModelsEndpoint(baseURL: string | undefined): string {
+  return `${normalizeGeminiBaseURL(baseURL)}/models`;
+}
+
+function normalizeGeminiBaseURL(baseURL: string | undefined): string {
   const normalizedBaseURL = (baseURL?.trim() || "https://generativelanguage.googleapis.com").replace(/\/+$/u, "");
-  return `${normalizedBaseURL}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  if (normalizedBaseURL.endsWith("/v1beta")) {
+    return normalizedBaseURL;
+  }
+  if (normalizedBaseURL.endsWith("/v1")) {
+    return `${normalizedBaseURL.slice(0, -3)}/v1beta`;
+  }
+  return `${normalizedBaseURL}/v1beta`;
+}
+
+function geminiGenerateContentModelPath(model: string): string {
+  return geminiModelId(model)
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
 async function sub2ApiHttpProviderError(response: Response): Promise<ProviderError> {
@@ -950,10 +1328,48 @@ async function safeProviderErrorMessage(response: Response): Promise<string> {
       return stringRecordValue(error ?? record, "message") ?? stringRecordValue(record, "detail") ?? "";
     }
 
-    return (await response.text()).trim().slice(0, 300);
+    const text = (await response.text()).trim();
+    return htmlProviderErrorMessage(text) ?? text.slice(0, 300);
   } catch {
     return "";
   }
+}
+
+function htmlProviderErrorMessage(text: string): string | undefined {
+  if (!looksLikeHtml(text)) {
+    return undefined;
+  }
+
+  const title = htmlTagText(text, "title");
+  if (title) {
+    return title;
+  }
+
+  const heading = htmlTagText(text, "h1");
+  return heading || "Upstream returned an HTML error page.";
+}
+
+function looksLikeHtml(text: string): boolean {
+  return /^<!doctype\s+html\b/iu.test(text) || /^<html\b/iu.test(text) || /<\/html>/iu.test(text);
+}
+
+function htmlTagText(text: string, tagName: string): string | undefined {
+  const match = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "iu").exec(text);
+  const value = match?.[1]
+    ?.replace(/<[^>]*>/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return value ? decodeBasicHtmlEntities(value) : undefined;
+}
+
+function decodeBasicHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/giu, " ")
+    .replace(/&amp;/giu, "&")
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;/giu, "'");
 }
 
 function sub2ApiFetchFailureToProviderError(error: unknown): ProviderError | Error {
@@ -1062,6 +1478,11 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
 function stringRecordValue(record: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function arrayStringRecordValue(record: Record<string, unknown> | undefined, key: string): string[] | undefined {
+  const value = record?.[key];
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined;
 }
 
 async function dataUrlToFile(input: ReferenceImageInput): Promise<File> {

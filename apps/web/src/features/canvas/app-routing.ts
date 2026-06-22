@@ -1,4 +1,4 @@
-export type AppRoute = "home" | "canvas" | "gallery" | "creative-video" | "video-library";
+export type AppRoute = "home" | "canvas" | "gallery" | "creative-video" | "video-library" | "request-logs";
 
 export function routeFromPathname(pathname: string): AppRoute {
   if (pathname === "/canvas") {
@@ -7,6 +7,10 @@ export function routeFromPathname(pathname: string): AppRoute {
 
   if (pathname === "/gallery") {
     return "gallery";
+  }
+
+  if (pathname === "/request-logs") {
+    return "request-logs";
   }
 
   if (pathname === "/creative-video" || pathname === "/grok-imagine") {
@@ -23,6 +27,10 @@ export function pathForRoute(route: AppRoute): string {
 
   if (route === "gallery") {
     return "/gallery";
+  }
+
+  if (route === "request-logs") {
+    return "/request-logs";
   }
 
   if (route === "creative-video") {

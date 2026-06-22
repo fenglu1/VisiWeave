@@ -83,7 +83,9 @@ OPENAI_IMAGE_TIMEOUT_MS=1200000
 ```
 
 Leave `OPENAI_BASE_URL` empty for the official OpenAI API. Set it to an OpenAI-compatible `/v1` endpoint when using another provider, and set `OPENAI_IMAGE_MODEL` if that endpoint expects a different model name.
-`OPENAI_IMAGE_PROVIDER_FORMAT` defaults to `newapi`; set it to `sub2api` for Sub2API-compatible image endpoints that return streamed image events.
+`OPENAI_IMAGE_PROVIDER_FORMAT` defaults to `newapi`; set it to `sub2api` for Sub2API-compatible image endpoints that return streamed image events, or `gemini` for Gemini `generateContent`-compatible endpoints.
+
+[img.hanhegufei.online](https://img.hanhegufei.online/) is a third-party Gemini `generateContent` source and supports native image generation up to 4K.
 
 You can also open the top-right provider settings dialog and save one local OpenAI-compatible provider. Local keys are stored in SQLite under `DATA_DIR`, returned only as masked values, and preserved until you enter a replacement key.
 
@@ -303,3 +305,7 @@ MIT
 ## Links
 
 - [LINUX DO](https://linux.do/)
+
+## Acknowledgements
+
+Thanks to the public-welfare API sites [api.futureppo.top](https://api.futureppo.top/) and [api.pie-xian.com](https://api.pie-xian.com/) for providing video generation and image generation services.

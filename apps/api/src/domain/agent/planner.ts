@@ -3,6 +3,7 @@ import { ChatOpenAI } from "@langchain/openai";
 import { createDeepAgent } from "deepagents";
 import type { UsableAgentLlmConfig } from "./config.js";
 import { createEmbeddedPlanningSkillsPrompt, createPlanningSkillFiles, createPlanningSystemPrompt } from "./planning-skill.js";
+import { recordProviderRequestLog } from "../request-logs/request-log-store.js";
 import {
   GENERATION_PLAN_SCHEMA_VERSION,
   IMAGE_QUALITIES,
@@ -222,6 +223,14 @@ export async function createGenerationPlan(input: AgentPlannerInput): Promise<Ag
     if (runner.streamsThinkingDeltas) {
       runnerOptions.onThinkingDelta = input.onThinkingDelta;
     }
+    const requestBody = {
+      model: input.llmConfig.model,
+      messages,
+      files: Object.keys(planningSkillFiles),
+      plannerOptions,
+      attemptIndex
+    };
+    const startedAt = Date.now();
 
     try {
       const agentResult = await runner.invoke(
@@ -231,6 +240,12 @@ export async function createGenerationPlan(input: AgentPlannerInput): Promise<Ag
         },
         runnerOptions
       );
+      await recordAgentPlannerRequest(input.llmConfig, requestBody, {
+        responseBodyPreview: {
+          text: extractTextFromAgentResult(agentResult) ?? undefined
+        },
+        startedAt
+      });
       if (input.signal?.aborted) {
         return agentRunCancelledResult();
       }
@@ -245,6 +260,10 @@ export async function createGenerationPlan(input: AgentPlannerInput): Promise<Ag
         agentResult
       };
     } catch (error) {
+      await recordAgentPlannerRequest(input.llmConfig, requestBody, {
+        error,
+        startedAt
+      });
       if (input.signal?.aborted) {
         return agentRunCancelledResult();
       }
@@ -290,6 +309,41 @@ export async function createGenerationPlan(input: AgentPlannerInput): Promise<Ag
     reflectionAttempt += 1;
     plannerMessages = [message, buildPlannerReflectionUserMessage(evaluation)];
   }
+}
+
+async function recordAgentPlannerRequest(
+  config: UsableAgentLlmConfig,
+  requestBody: unknown,
+  result: {
+    error?: unknown;
+    responseBodyPreview?: unknown;
+    startedAt: number;
+  }
+): Promise<void> {
+  await recordProviderRequestLog({
+    service: "agent",
+    category: "agent",
+    providerKind: "agent",
+    method: "POST",
+    url: agentChatCompletionsEndpoint(config.baseUrl),
+    requestHeaders: {
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    requestBody,
+    responseStatus: result.error ? undefined : 200,
+    responseBodyPreview: result.responseBodyPreview,
+    error: result.error ? agentLogErrorMessage(result.error) : undefined,
+    durationMs: Date.now() - result.startedAt
+  });
+}
+
+function agentChatCompletionsEndpoint(baseUrl: string | undefined): string {
+  const base = (baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/u, "");
+  return `${base}/chat/completions`;
+}
+
+function agentLogErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error);
 }
 
 function evaluatePlannerAttemptOutput(input: {

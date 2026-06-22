@@ -64,6 +64,8 @@ export const providerConfigs = sqliteTable("provider_configs", {
   videoHeight: integer("video_height"),
   videoFps: integer("video_fps"),
   videoInterpolation: text("video_interpolation"),
+  imageRequestLoggingEnabled: integer("image_request_logging_enabled").notNull(),
+  videoRequestLoggingEnabled: integer("video_request_logging_enabled").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 });
@@ -104,8 +106,28 @@ export const agentLlmConfigs = sqliteTable("agent_llm_configs", {
   model: text("model").notNull(),
   timeoutMs: integer("timeout_ms").notNull(),
   supportsVision: integer("supports_vision").notNull(),
+  requestLoggingEnabled: integer("request_logging_enabled").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
+});
+
+export const providerRequestLogs = sqliteTable("provider_request_logs", {
+  id: text("id").primaryKey(),
+  service: text("service").notNull(),
+  category: text("category").notNull(),
+  providerKind: text("provider_kind").notNull(),
+  method: text("method").notNull(),
+  url: text("url").notNull(),
+  path: text("path").notNull(),
+  requestHeadersJson: text("request_headers_json").notNull(),
+  requestBodyJson: text("request_body_json").notNull(),
+  responseStatus: integer("response_status"),
+  responseBodyPreviewJson: text("response_body_preview_json"),
+  error: text("error"),
+  durationMs: integer("duration_ms"),
+  relatedGenerationId: text("related_generation_id"),
+  relatedOutputId: text("related_output_id"),
+  createdAt: text("created_at").notNull()
 });
 
 export const codexOAuthTokens = sqliteTable("codex_oauth_tokens", {

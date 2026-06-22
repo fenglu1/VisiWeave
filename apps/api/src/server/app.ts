@@ -13,6 +13,7 @@ import { registerGalleryRoutes } from "./routes/gallery.js";
 import { registerImageRoutes } from "./routes/images.js";
 import { registerProjectRoutes } from "./routes/project.js";
 import { registerProviderConfigRoutes } from "./routes/provider-config.js";
+import { registerRequestLogRoutes } from "./routes/request-logs.js";
 import { registerStorageRoutes } from "./routes/storage.js";
 import { registerVideoRoutes } from "./routes/videos.js";
 
@@ -31,6 +32,7 @@ export function createApp(): Hono {
   registerAuthRoutes(app);
   registerProviderConfigRoutes(app);
   registerAgentConfigRoutes(app);
+  registerRequestLogRoutes(app);
   registerProjectRoutes(app);
   registerGalleryRoutes(app);
   registerStorageRoutes(app);

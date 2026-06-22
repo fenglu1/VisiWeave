@@ -14,6 +14,7 @@ export interface AgentLlmConfigView {
   model: string;
   timeoutMs: number;
   supportsVision: boolean;
+  requestLoggingEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,6 +26,7 @@ export interface SaveAgentLlmConfigRequest {
   model: string;
   timeoutMs: number;
   supportsVision: boolean;
+  requestLoggingEnabled?: boolean;
 }
 
 export type AgentThinkingType = "enabled" | "disabled";

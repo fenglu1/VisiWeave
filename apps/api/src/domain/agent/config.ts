@@ -14,6 +14,7 @@ export interface UsableAgentLlmConfig {
   model: string;
   timeoutMs: number;
   supportsVision: boolean;
+  requestLoggingEnabled: boolean;
 }
 
 export function getAgentLlmConfig(): AgentLlmConfigView {
@@ -35,8 +36,13 @@ export function getUsableAgentLlmConfig(): UsableAgentLlmConfig | undefined {
     baseUrl: trimToUndefined(row?.baseUrl),
     model,
     timeoutMs,
-    supportsVision: row?.supportsVision === 1
+    supportsVision: row?.supportsVision === 1,
+    requestLoggingEnabled: row?.requestLoggingEnabled === 1
   };
+}
+
+export function isAgentRequestLoggingEnabled(): boolean {
+  return getAgentLlmConfigRow()?.requestLoggingEnabled === 1;
 }
 
 export function saveAgentLlmConfig(input: SaveAgentLlmConfigRequest): AgentLlmConfigView {
@@ -58,6 +64,12 @@ export function saveAgentLlmConfig(input: SaveAgentLlmConfigRequest): AgentLlmCo
     model,
     timeoutMs,
     supportsVision: input.supportsVision ? 1 : 0,
+    requestLoggingEnabled:
+      input.requestLoggingEnabled === undefined
+        ? (existing?.requestLoggingEnabled ?? 0)
+        : input.requestLoggingEnabled
+          ? 1
+          : 0,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
@@ -72,6 +84,7 @@ export function saveAgentLlmConfig(input: SaveAgentLlmConfigRequest): AgentLlmCo
         model: row.model,
         timeoutMs: row.timeoutMs,
         supportsVision: row.supportsVision,
+        requestLoggingEnabled: row.requestLoggingEnabled,
         updatedAt: row.updatedAt
       }
     })
@@ -96,6 +109,7 @@ function toAgentLlmConfigView(row: AgentLlmConfigRow | undefined): AgentLlmConfi
     model,
     timeoutMs,
     supportsVision: row?.supportsVision === 1,
+    requestLoggingEnabled: row?.requestLoggingEnabled === 1,
     createdAt: row?.createdAt ?? "",
     updatedAt: row?.updatedAt ?? ""
   };

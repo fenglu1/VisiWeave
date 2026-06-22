@@ -121,6 +121,10 @@ export function getProviderConfig(): ProviderConfigResponse {
     imageConfigs: imageProviderConfigViews(row, imageRows),
     video: videoProviderConfigView(row, videoRows),
     videoConfigs: videoProviderConfigViews(videoRows),
+    requestLogging: {
+      image: row?.imageRequestLoggingEnabled === 1,
+      video: row?.videoRequestLoggingEnabled === 1
+    },
     activeSource: activeSource ? providerSourceSummary(activeSource) : undefined
   };
 }
@@ -167,6 +171,14 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
     videoHeight: existing?.videoHeight ?? null,
     videoFps: existing?.videoFps ?? null,
     videoInterpolation: existing?.videoInterpolation ?? null,
+    imageRequestLoggingEnabled:
+      input.requestLogging?.image === undefined
+        ? (existing?.imageRequestLoggingEnabled ?? 0)
+        : booleanToInteger(input.requestLogging.image),
+    videoRequestLoggingEnabled:
+      input.requestLogging?.video === undefined
+        ? (existing?.videoRequestLoggingEnabled ?? 0)
+        : booleanToInteger(input.requestLogging.video),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
@@ -197,6 +209,8 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
         videoHeight: row.videoHeight,
         videoFps: row.videoFps,
         videoInterpolation: row.videoInterpolation,
+        imageRequestLoggingEnabled: row.imageRequestLoggingEnabled,
+        videoRequestLoggingEnabled: row.videoRequestLoggingEnabled,
         updatedAt: row.updatedAt
       }
     })
@@ -221,6 +235,14 @@ export function getProviderSourceOrder(): ProviderSourceId[] {
   return readSavedSourceOrder(getProviderConfigRow()?.sourceOrderJson);
 }
 
+export function isImageRequestLoggingEnabled(): boolean {
+  return getProviderConfigRow()?.imageRequestLoggingEnabled === 1;
+}
+
+export function isVideoRequestLoggingEnabled(): boolean {
+  return getProviderConfigRow()?.videoRequestLoggingEnabled === 1;
+}
+
 export function getEnvironmentOpenAIImageProviderConfig(): OpenAIImageProviderConfig | undefined {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
@@ -239,8 +261,12 @@ export function getEnvironmentOpenAIImageProviderConfig(): OpenAIImageProviderCo
 
 export function getLocalOpenAIImageProviderConfig(): OpenAIImageProviderConfig | undefined {
   const row = getProviderConfigRow();
+  return getLocalOpenAIImageProviderConfigForKind(activeImageProviderKind(row));
+}
+
+export function getLocalOpenAIImageProviderConfigForKind(kind: ImageProviderFormat): OpenAIImageProviderConfig | undefined {
+  const row = getProviderConfigRow();
   const imageRows = getImageProviderConfigRowsByKind();
-  const kind = activeImageProviderKind(row);
   const imageRow = imageProviderConfigRowForKind(kind, row, imageRows);
   const apiKey = trimToUndefined(imageRow.apiKey);
   if (!apiKey) {
@@ -871,6 +897,10 @@ function validTimeoutMs(value: number | null | undefined): number | undefined {
 function positiveIntegerFromString(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function booleanToInteger(value: boolean): 0 | 1 {
+  return value ? 1 : 0;
 }
 
 function parseVideoProviderKind(value: string | null | undefined): VideoProviderKind | undefined {

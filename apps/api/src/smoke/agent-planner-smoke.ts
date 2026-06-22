@@ -1194,6 +1194,7 @@ function llmConfigFixture(overrides: Partial<UsableAgentLlmConfig> = {}): Usable
     model: "deepseek-chat",
     timeoutMs: 60000,
     supportsVision: false,
+    requestLoggingEnabled: false,
     ...overrides
   };
 }

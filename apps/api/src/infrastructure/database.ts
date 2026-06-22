@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   video_height INTEGER,
   video_fps INTEGER,
   video_interpolation TEXT,
+  image_request_logging_enabled INTEGER NOT NULL DEFAULT 0,
+  video_request_logging_enabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -142,8 +144,28 @@ CREATE TABLE IF NOT EXISTS agent_llm_configs (
   model TEXT NOT NULL DEFAULT '',
   timeout_ms INTEGER NOT NULL DEFAULT 60000,
   supports_vision INTEGER NOT NULL DEFAULT 0,
+  request_logging_enabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS provider_request_logs (
+  id TEXT PRIMARY KEY NOT NULL,
+  service TEXT NOT NULL,
+  category TEXT NOT NULL,
+  provider_kind TEXT NOT NULL,
+  method TEXT NOT NULL,
+  url TEXT NOT NULL,
+  path TEXT NOT NULL,
+  request_headers_json TEXT NOT NULL,
+  request_body_json TEXT NOT NULL,
+  response_status INTEGER,
+  response_body_preview_json TEXT,
+  error TEXT,
+  duration_ms INTEGER,
+  related_generation_id TEXT,
+  related_output_id TEXT,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS codex_oauth_tokens (
@@ -233,6 +255,8 @@ CREATE INDEX IF NOT EXISTS generation_reference_assets_asset_id_idx ON generatio
 CREATE INDEX IF NOT EXISTS video_generation_records_created_at_idx ON video_generation_records(created_at);
 CREATE INDEX IF NOT EXISTS video_generation_outputs_generation_id_idx ON video_generation_outputs(generation_id);
 CREATE INDEX IF NOT EXISTS video_generation_outputs_asset_id_idx ON video_generation_outputs(asset_id);
+CREATE INDEX IF NOT EXISTS provider_request_logs_created_at_idx ON provider_request_logs(created_at);
+CREATE INDEX IF NOT EXISTS provider_request_logs_service_created_at_idx ON provider_request_logs(service, created_at);
 `);
 
 ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");
@@ -274,11 +298,14 @@ ensureColumn("provider_configs", "video_width", "video_width INTEGER");
 ensureColumn("provider_configs", "video_height", "video_height INTEGER");
 ensureColumn("provider_configs", "video_fps", "video_fps INTEGER");
 ensureColumn("provider_configs", "video_interpolation", "video_interpolation TEXT");
+ensureColumn("provider_configs", "image_request_logging_enabled", "image_request_logging_enabled INTEGER NOT NULL DEFAULT 0");
+ensureColumn("provider_configs", "video_request_logging_enabled", "video_request_logging_enabled INTEGER NOT NULL DEFAULT 0");
 ensureColumn("agent_llm_configs", "api_key", "api_key TEXT");
 ensureColumn("agent_llm_configs", "base_url", "base_url TEXT NOT NULL DEFAULT ''");
 ensureColumn("agent_llm_configs", "model", "model TEXT NOT NULL DEFAULT ''");
 ensureColumn("agent_llm_configs", "timeout_ms", "timeout_ms INTEGER NOT NULL DEFAULT 60000");
 ensureColumn("agent_llm_configs", "supports_vision", "supports_vision INTEGER NOT NULL DEFAULT 0");
+ensureColumn("agent_llm_configs", "request_logging_enabled", "request_logging_enabled INTEGER NOT NULL DEFAULT 0");
 ensureColumn("video_generation_records", "progress_percent", "progress_percent INTEGER NOT NULL DEFAULT 0");
 ensureColumn("video_generation_records", "progress_stage", "progress_stage TEXT NOT NULL DEFAULT 'queued'");
 ensureColumn("video_generation_records", "progress_message", "progress_message TEXT");

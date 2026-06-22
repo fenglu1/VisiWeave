@@ -1,0 +1,430 @@
+.request-logs-page {
+  --request-log-page-bg:
+    linear-gradient(180deg, rgb(255 253 248 / 0.92), rgb(247 240 229 / 0.96)),
+    var(--paper-soft);
+  --request-log-surface: var(--paper-panel);
+  --request-log-surface-muted: #fbf7ef;
+  --request-log-border: var(--line);
+  --request-log-border-strong: var(--line-strong);
+  --request-log-text: var(--ink);
+  --request-log-muted: var(--muted-ink);
+  --request-log-accent: #0f766e;
+  --request-log-accent-soft: #e8fbf6;
+  --request-log-accent-hover: #f0fbf8;
+  --request-log-code-bg: #fbfcfe;
+  --request-log-code-text: #15212a;
+  --request-log-code-border: #d8e2e6;
+  --request-log-code-shadow: inset 0 1px 0 rgb(255 255 255 / 0.85);
+  --request-log-status-bg: #eef2ff;
+  --request-log-status-text: #3730a3;
+  --request-log-shadow: 0 18px 46px rgb(92 63 35 / 0.09);
+  min-height: 0;
+  overflow: auto;
+  background: var(--request-log-page-bg);
+  color: var(--request-log-text);
+  padding: clamp(1rem, 2vw, 1.6rem);
+}
+
+.app-root[data-canvas-theme="light"] .request-logs-page {
+  color-scheme: light;
+}
+
+.app-root[data-canvas-theme="dark"] .request-logs-page {
+  --request-log-page-bg:
+    linear-gradient(90deg, rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, #14110f 0%, #0f0f10 56%, #17120f 100%);
+  --request-log-surface: var(--paper-panel);
+  --request-log-surface-muted: #161210;
+  --request-log-border: var(--line);
+  --request-log-border-strong: var(--line-strong);
+  --request-log-text: var(--ink);
+  --request-log-muted: var(--muted-ink);
+  --request-log-accent: #2dd4bf;
+  --request-log-accent-soft: rgb(20 184 166 / 0.13);
+  --request-log-accent-hover: rgb(20 184 166 / 0.16);
+  --request-log-code-bg: #0f171a;
+  --request-log-code-text: #e9faf7;
+  --request-log-code-border: rgb(148 163 184 / 0.24);
+  --request-log-code-shadow: none;
+  --request-log-status-bg: rgb(20 184 166 / 0.13);
+  --request-log-status-text: #99f6e4;
+  --request-log-shadow: 0 18px 48px rgb(0 0 0 / 0.3);
+  background-size: 42px 42px, auto;
+  color-scheme: dark;
+}
+
+.request-logs-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 1440px;
+  margin: 0 auto 1rem;
+}
+
+.request-logs-header__eyebrow {
+  color: var(--request-log-muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.request-logs-header h1 {
+  margin: 0.15rem 0 0;
+  color: var(--request-log-text);
+  font-size: clamp(1.35rem, 2vw, 2rem);
+  line-height: 1.1;
+}
+
+.request-logs-header p {
+  max-width: 48rem;
+  margin: 0.45rem 0 0;
+  color: var(--request-log-muted);
+  font-size: 0.95rem;
+}
+
+.request-logs-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--request-log-border);
+  border-radius: 7px;
+  background: var(--request-log-surface);
+  box-shadow: var(--request-log-shadow);
+  color: var(--request-log-text);
+  font-weight: 800;
+  padding: 0.62rem 0.8rem;
+  white-space: nowrap;
+}
+
+.request-logs-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+  gap: 0.75rem;
+  max-width: 1440px;
+  margin: 0 auto 0.85rem;
+}
+
+.request-logs-filter {
+  min-width: 0;
+  border: 1px solid var(--request-log-border);
+  border-radius: 7px;
+  background: var(--request-log-surface);
+  box-shadow: var(--request-log-shadow);
+  padding: 0.65rem;
+}
+
+.request-logs-filter > span {
+  display: block;
+  color: var(--request-log-muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  margin-bottom: 0.45rem;
+}
+
+.request-logs-filter__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.request-logs-filter__buttons button {
+  border: 1px solid var(--request-log-border);
+  border-radius: 7px;
+  background: var(--request-log-surface-muted);
+  color: var(--request-log-muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 850;
+  line-height: 1;
+  padding: 0.5rem 0.62rem;
+}
+
+.request-logs-filter__buttons button[data-active="true"] {
+  border-color: var(--request-log-accent);
+  background: var(--request-log-accent-soft);
+  color: var(--request-log-accent);
+}
+
+.request-logs-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 1440px;
+  margin: 0 auto 0.85rem;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  background: #fff1f2;
+  color: #991b1b;
+  font-weight: 800;
+  padding: 0.75rem 0.85rem;
+}
+
+.request-logs-layout {
+  display: grid;
+  grid-template-columns: minmax(20rem, 0.42fr) minmax(0, 1fr);
+  gap: 0.85rem;
+  max-width: 1440px;
+  margin: 0 auto;
+  min-height: 0;
+}
+
+.request-logs-list,
+.request-log-detail {
+  min-width: 0;
+  border: 1px solid var(--request-log-border);
+  border-radius: 8px;
+  background: var(--request-log-surface);
+  box-shadow: var(--request-log-shadow);
+}
+
+.request-logs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: calc(100vh - 16rem);
+  overflow: auto;
+  padding: 0.5rem;
+}
+
+.request-log-row {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 0.65rem;
+}
+
+.request-log-row:hover,
+.request-log-row[data-active="true"] {
+  border-color: var(--request-log-accent);
+  background: var(--request-log-accent-hover);
+}
+
+.request-log-row__topline,
+.request-log-row__path,
+.request-log-row__meta {
+  display: flex;
+  min-width: 0;
+}
+
+.request-log-row__topline {
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--request-log-text);
+  font-size: 0.82rem;
+}
+
+.request-log-row__topline span {
+  color: var(--request-log-muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.request-log-row__path {
+  margin-top: 0.35rem;
+  color: var(--request-log-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-log-row__meta {
+  margin-top: 0.32rem;
+  color: var(--request-log-muted);
+  font-size: 0.74rem;
+}
+
+.request-logs-empty,
+.request-log-detail--empty {
+  display: flex;
+  min-height: 12rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--request-log-muted);
+  font-weight: 800;
+}
+
+.request-log-detail {
+  max-height: calc(100vh - 16rem);
+  overflow: auto;
+  padding: 0.85rem;
+}
+
+.request-log-detail__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--request-log-border);
+  padding-bottom: 0.75rem;
+}
+
+.request-log-detail__header span {
+  color: var(--request-log-muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.request-log-detail__header h2 {
+  margin: 0.24rem 0 0;
+  color: var(--request-log-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.request-log-detail__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.request-log-action-button,
+.request-log-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 1px solid var(--request-log-code-border);
+  border-radius: 7px;
+  background: var(--request-log-surface-muted);
+  color: var(--request-log-text);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 900;
+  line-height: 1;
+  padding: 0.42rem 0.55rem;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+  white-space: nowrap;
+}
+
+.request-log-action-button:hover,
+.request-log-copy-button:hover {
+  border-color: var(--request-log-accent);
+  background: var(--request-log-accent-soft);
+  color: var(--request-log-accent);
+}
+
+.request-log-action-button:focus-visible,
+.request-log-copy-button:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.18);
+  outline-offset: 2px;
+}
+
+.request-log-detail__header strong {
+  align-self: flex-start;
+  border-radius: 999px;
+  background: var(--request-log-status-bg);
+  color: var(--request-log-status-text);
+  font-size: 0.78rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.request-log-detail__meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.85rem 0;
+}
+
+.request-log-detail__meta div {
+  border: 1px solid var(--request-log-border);
+  border-radius: 7px;
+  background: var(--request-log-surface-muted);
+  padding: 0.58rem;
+}
+
+.request-log-detail__meta dt {
+  color: var(--request-log-muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.request-log-detail__meta dd {
+  margin: 0.22rem 0 0;
+  color: var(--request-log-text);
+  font-size: 0.82rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.request-log-block {
+  margin-top: 0.75rem;
+}
+
+.request-log-block__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.request-log-block h3 {
+  margin: 0;
+  color: var(--request-log-text);
+  font-size: 0.82rem;
+}
+
+.request-log-copy-button {
+  padding: 0.36rem 0.5rem;
+}
+
+.request-log-block pre {
+  max-height: 12rem;
+  overflow: auto;
+  border: 1px solid var(--request-log-code-border);
+  border-radius: 7px;
+  background: var(--request-log-code-bg);
+  color: var(--request-log-code-text);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  margin: 0;
+  padding: 0.75rem;
+  box-shadow: var(--request-log-code-shadow);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.request-log-block pre[data-expanded="true"] {
+  max-height: min(70vh, 44rem);
+}
+
+.top-navigation__brand-trigger {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+@media (max-width: 900px) {
+  .request-logs-header,
+  .request-logs-filters,
+  .request-logs-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .request-logs-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .request-logs-list,
+  .request-log-detail {
+    max-height: none;
+  }
+}

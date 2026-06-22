@@ -1,8 +1,33 @@
 export type RuntimeImageProvider = "openai" | "codex" | "none";
 export const IMAGE_PROVIDER_FORMATS = ["newapi", "sub2api", "gemini"] as const;
 export type ImageProviderFormat = (typeof IMAGE_PROVIDER_FORMATS)[number];
+export const GEMINI_IMAGE_MODEL_PREFERENCE_ORDER = ["openai/gpt-image-2", "seedream/seedream-5-0"] as const;
 export const VIDEO_PROVIDER_KINDS = ["keyframe-image", "custom-http", "grok-imagine"] as const;
 export type VideoProviderKind = (typeof VIDEO_PROVIDER_KINDS)[number];
+
+export interface ImageProviderModelOption {
+  id: string;
+  displayName: string;
+}
+
+export interface ImageProviderModelsRequest {
+  apiKey?: string;
+  baseUrl?: string;
+  kind: ImageProviderFormat;
+  preserveApiKey?: boolean;
+  timeoutMs?: number;
+}
+
+export interface ImageProviderModelsResponse {
+  defaultModel?: string;
+  kind: ImageProviderFormat;
+  models: ImageProviderModelOption[];
+}
+
+export function preferredImageProviderModel(models: readonly ImageProviderModelOption[]): string | undefined {
+  const modelIds = new Set(models.map((model) => model.id));
+  return GEMINI_IMAGE_MODEL_PREFERENCE_ORDER.find((modelId) => modelIds.has(modelId)) ?? models[0]?.id;
+}
 
 export const PROVIDER_SOURCE_IDS = ["env-openai", "local-openai", "codex"] as const;
 export type ProviderSourceId = (typeof PROVIDER_SOURCE_IDS)[number];
@@ -92,6 +117,11 @@ export interface VideoProviderConfigView {
 
 export type VideoProviderConfigMap = Record<VideoProviderKind, VideoProviderConfigView>;
 
+export interface ProviderRequestLoggingSettings {
+  image: boolean;
+  video: boolean;
+}
+
 export interface ProviderConfigResponse {
   sourceOrder: ProviderSourceId[];
   sources: ProviderSourceView[];
@@ -100,6 +130,7 @@ export interface ProviderConfigResponse {
   imageConfigs: ImageProviderConfigMap;
   video: VideoProviderConfigView;
   videoConfigs: VideoProviderConfigMap;
+  requestLogging: ProviderRequestLoggingSettings;
   activeSource?: ProviderSourceSummary;
 }
 
@@ -119,6 +150,7 @@ export interface SaveProviderConfigRequest {
   image?: SaveLocalOpenAIProviderConfig;
   imageConfigs?: Partial<Record<ImageProviderFormat, SaveLocalOpenAIProviderConfig>>;
   video?: SaveVideoProviderConfig;
+  requestLogging?: Partial<ProviderRequestLoggingSettings>;
 }
 
 export interface SaveVideoProviderConfig {

@@ -335,6 +335,18 @@ function preloadVideoLibraryPage(): void {
   void loadVideoLibraryPageModule();
 }
 
+type RequestLogsPageModule = { default: ComponentType };
+let requestLogsPageModulePromise: Promise<RequestLogsPageModule> | undefined;
+
+function loadRequestLogsPageModule(): Promise<RequestLogsPageModule> {
+  requestLogsPageModulePromise ??= import("../request-logs/RequestLogsPage").then((module) => ({
+    default: module.RequestLogsPage as ComponentType
+  }));
+  return requestLogsPageModulePromise;
+}
+
+const LazyRequestLogsPage = lazy(loadRequestLogsPageModule);
+
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
@@ -2200,6 +2212,7 @@ function TopNavigation({
   theme,
   onToggleTheme,
   onOpenProviderConfig,
+  onOpenRequestLogs,
   route,
   onNavigate,
   onPreloadGallery,
@@ -2209,6 +2222,7 @@ function TopNavigation({
   theme: AppTheme;
   onToggleTheme: () => void;
   onOpenProviderConfig: () => void;
+  onOpenRequestLogs: () => void;
   route: AppRoute;
   onNavigate: (route: AppRoute) => void;
   onPreloadGallery: () => void;
@@ -2220,13 +2234,24 @@ function TopNavigation({
   return (
     <header className="top-navigation">
       <div className="top-navigation__inner">
-        <div className="brand-lockup min-w-0">
+        <button
+          aria-label={t("requestLogsOpen")}
+          className="brand-lockup top-navigation__brand-trigger min-w-0"
+          title={t("requestLogsOpen")}
+          type="button"
+          onClick={(event) => {
+            if (event.detail >= 2) {
+              onOpenRequestLogs();
+            }
+          }}
+          onDoubleClick={onOpenRequestLogs}
+        >
           <BrandMark />
           <div className="min-w-0">
             <BrandName />
             <p className="brand-tagline">{t("appTagline")}</p>
           </div>
-        </div>
+        </button>
         <div className="top-navigation__actions">
           <nav aria-label={t("navMainAria")} className="top-navigation__links">
             <a
@@ -5066,6 +5091,7 @@ export function App() {
         route={route}
         onNavigate={navigateToRoute}
         onOpenProviderConfig={() => setIsProviderConfigDialogOpen(true)}
+        onOpenRequestLogs={() => navigateToRoute("request-logs")}
         onPreloadCreativeVideo={preloadCreativeVideoPage}
         onPreloadGallery={preloadGalleryPage}
         onPreloadVideoLibrary={preloadVideoLibraryPage}
@@ -6445,6 +6471,20 @@ export function App() {
           }
         >
           <LazyVideoLibraryPage />
+        </Suspense>
+      ) : null}
+      {route === "request-logs" ? (
+        <Suspense
+          fallback={
+            <main className="app-view video-page-loading" data-testid="request-logs-loading-page">
+              <div className="gallery-empty-state gallery-empty-state--boot" role="status">
+                <Loader2 className="size-5 animate-spin" aria-hidden="true" />
+                <p>{t("requestLogsLoading")}</p>
+              </div>
+            </main>
+          }
+        >
+          <LazyRequestLogsPage />
         </Suspense>
       ) : null}
     </div>

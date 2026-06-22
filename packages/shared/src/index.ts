@@ -6,3 +6,4 @@ export * from "./provider-config.js";
 export * from "./agent.js";
 export * from "./storage.js";
 export * from "./video.js";
+export * from "./request-log.js";

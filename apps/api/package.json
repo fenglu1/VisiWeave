@@ -16,6 +16,8 @@
     "smoke:custom-http-grok2api-video": "tsx src/smoke/custom-http-grok2api-video-smoke.ts",
     "smoke:grok-imagine-video": "tsx src/smoke/grok-imagine-video-provider-smoke.ts",
     "smoke:image-provider-format": "tsx src/smoke/image-provider-format-smoke.ts",
+    "smoke:provider-image-models": "tsx src/smoke/provider-image-models-smoke.ts",
+    "smoke:request-logs": "tsx src/smoke/request-logs-smoke.ts",
     "smoke:video-duration-presets": "tsx src/smoke/video-duration-presets-smoke.ts",
     "smoke:video-library-delete": "tsx src/smoke/video-library-delete-smoke.ts",
     "typecheck": "pnpm --filter @gpt-image-canvas/shared build && tsc -p tsconfig.json --noEmit",

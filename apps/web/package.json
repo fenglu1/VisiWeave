@@ -9,6 +9,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "smoke:provider-config-dialog": "pnpm --filter @gpt-image-canvas/api exec tsx ../web/src/smoke/provider-config-dialog-smoke.ts",
+    "smoke:request-logs-page": "pnpm --dir ../api exec tsx ../web/src/smoke/request-logs-page-smoke.ts",
+    "smoke:request-logs-theme": "pnpm --dir ../api exec tsx ../web/src/smoke/request-logs-theme-smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

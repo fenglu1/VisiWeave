@@ -15,6 +15,7 @@ import {
   type GenerateVideoRequest,
   type GenerationCount,
   type ImageQuality,
+  type ImageProviderModelsRequest,
   type ImageProviderFormat,
   type ImageSize,
   type OutputFormat,
@@ -523,6 +524,13 @@ export function parseAgentLlmConfigPayload(input: unknown): ParseResult<SaveAgen
     };
   }
 
+  if (Object.hasOwn(input, "requestLoggingEnabled") && typeof input.requestLoggingEnabled !== "boolean") {
+    return {
+      ok: false,
+      error: errorResponse("invalid_agent_config", "Agent LLM requestLoggingEnabled must be a boolean.")
+    };
+  }
+
   return {
     ok: true,
     value: {
@@ -531,7 +539,8 @@ export function parseAgentLlmConfigPayload(input: unknown): ParseResult<SaveAgen
       baseUrl: input.baseUrl,
       model: input.model,
       timeoutMs: input.timeoutMs,
-      supportsVision: input.supportsVision
+      supportsVision: input.supportsVision,
+      requestLoggingEnabled: Object.hasOwn(input, "requestLoggingEnabled") ? input.requestLoggingEnabled === true : undefined
     }
   };
 }
@@ -564,6 +573,11 @@ export function parseProviderConfigPayload(input: unknown): ParseResult<SaveProv
     return imageConfigs;
   }
 
+  const requestLogging = input.requestLogging === undefined ? undefined : parseProviderRequestLogging(input.requestLogging);
+  if (requestLogging && !requestLogging.ok) {
+    return requestLogging;
+  }
+
   if (input.localOpenAI === undefined) {
     return {
       ok: true,
@@ -571,7 +585,8 @@ export function parseProviderConfigPayload(input: unknown): ParseResult<SaveProv
         sourceOrder: sourceOrder.value,
         image: image?.value,
         imageConfigs: imageConfigs?.value,
-        video: video?.value
+        video: video?.value,
+        requestLogging: requestLogging?.value
       }
     };
   }
@@ -588,8 +603,97 @@ export function parseProviderConfigPayload(input: unknown): ParseResult<SaveProv
       localOpenAI: localOpenAI.value,
       image: image?.value,
       imageConfigs: imageConfigs?.value,
-      video: video?.value
+      video: video?.value,
+      requestLogging: requestLogging?.value
     }
+  };
+}
+
+function parseProviderRequestLogging(
+  input: unknown
+): ParseResult<NonNullable<SaveProviderConfigRequest["requestLogging"]>> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Provider requestLogging must be a JSON object.")
+    };
+  }
+
+  const value: NonNullable<SaveProviderConfigRequest["requestLogging"]> = {};
+  for (const key of ["image", "video"] as const) {
+    if (!Object.hasOwn(input, key)) {
+      continue;
+    }
+    if (typeof input[key] !== "boolean") {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", `Provider requestLogging.${key} must be a boolean.`)
+      };
+    }
+    value[key] = input[key];
+  }
+
+  return {
+    ok: true,
+    value
+  };
+}
+
+export function parseImageProviderModelsPayload(input: unknown): ParseResult<ImageProviderModelsRequest> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Image model list payload must be a JSON object.")
+    };
+  }
+
+  const kind = parseImageProviderFormat(input.kind);
+  if (!kind) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Image model list kind must be newapi, sub2api, or gemini.")
+    };
+  }
+
+  const config: ImageProviderModelsRequest = {
+    kind,
+    preserveApiKey: input.preserveApiKey === true
+  };
+
+  if (Object.hasOwn(input, "apiKey")) {
+    if (typeof input.apiKey !== "string") {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Image model list API key must be a string.")
+      };
+    }
+    config.apiKey = input.apiKey;
+  }
+
+  if (Object.hasOwn(input, "baseUrl")) {
+    if (typeof input.baseUrl !== "string") {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Image model list base URL must be a string.")
+      };
+    }
+    config.baseUrl = input.baseUrl;
+  }
+
+  if (Object.hasOwn(input, "timeoutMs")) {
+    const timeoutMs = parsePositiveIntegerValue(input.timeoutMs);
+    if (!timeoutMs) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Image model list timeout must be a positive integer.")
+      };
+    }
+    config.timeoutMs = timeoutMs;
+  }
+
+  return {
+    ok: true,
+    value: config
   };
 }
 

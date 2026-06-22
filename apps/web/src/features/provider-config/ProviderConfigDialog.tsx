@@ -18,12 +18,16 @@ import {
   X
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useState, type PointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import {
   PROVIDER_SOURCE_IDS,
   VIDEO_PROVIDER_KINDS,
+  preferredImageProviderModel,
   type AgentLlmConfigView,
   type AuthStatusResponse,
+  type ImageProviderModelOption,
+  type ImageProviderModelsRequest,
+  type ImageProviderModelsResponse,
   type ImageProviderFormat,
   type LocalOpenAIProviderConfigView,
   type ProviderConfigResponse,
@@ -61,6 +65,7 @@ interface AgentLlmFormState {
   model: string;
   timeoutMs: string;
   supportsVision: boolean;
+  requestLoggingEnabled: boolean;
 }
 
 interface VideoProviderFormState {
@@ -92,9 +97,14 @@ type ProviderConfigWithImageConfigs = ProviderConfigResponse & {
   imageConfigs?: Partial<Record<ImageAdapterKind, ImageAdapterConfigView>>;
 };
 type VideoProviderFormMap = Record<VideoProviderKind, VideoProviderFormState>;
+type BrowserKeyValueStorage = {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+};
 
 const GROK_IMAGINE_VIDEO_MODEL = "grok-imagine-video";
 const IMAGE_ADAPTER_KINDS = ["newapi", "sub2api", "gemini"] as const;
+const GEMINI_MODEL_OPTIONS_CACHE_PREFIX = "gpt-image-canvas:gemini-model-options:";
 
 interface DialogMessage {
   tone: DialogMessageTone;
@@ -119,7 +129,8 @@ const emptyAgentLlmForm: AgentLlmFormState = {
   baseUrl: "",
   model: "",
   timeoutMs: "60000",
-  supportsVision: false
+  supportsVision: false,
+  requestLoggingEnabled: false
 };
 
 const emptyVideoProviderForm: VideoProviderFormState = {
@@ -162,8 +173,11 @@ export function ProviderConfigDialog({
   const [config, setConfig] = useState<ProviderConfigResponse | null>(null);
   const [agentConfig, setAgentConfig] = useState<AgentLlmConfigView | null>(null);
   const [sourceOrder, setSourceOrder] = useState<ProviderSourceId[]>([...PROVIDER_SOURCE_IDS]);
+  const [requestLogging, setRequestLogging] = useState({ image: false, video: false });
   const [selectedImageAdapterKind, setSelectedImageAdapterKind] = useState<ImageAdapterKind>("newapi");
   const [imageForms, setImageForms] = useState<ImageProviderFormMap>(emptyImageProviderForms);
+  const [geminiModelOptions, setGeminiModelOptions] = useState<ImageProviderModelOption[]>([]);
+  const geminiModelAutoLoadKeyRef = useRef<string | null>(null);
   const [agentForm, setAgentForm] = useState<AgentLlmFormState>(emptyAgentLlmForm);
   const [selectedVideoKind, setSelectedVideoKind] = useState<VideoProviderKind>("keyframe-image");
   const [videoForms, setVideoForms] = useState<VideoProviderFormMap>(emptyVideoProviderForms);
@@ -180,7 +194,8 @@ export function ProviderConfigDialog({
 
   const activeSourceId = config?.activeSource?.id;
   const imageForm = imageForms[selectedImageAdapterKind];
-  const imageConfigs = config ? imageConfigsFromProviderConfig(config) : undefined;
+  const imageModelOptions = selectedImageAdapterKind === "gemini" ? imageModelSelectOptions(geminiModelOptions, imageForm.model) : [];
+  const imageConfigs = useMemo(() => (config ? imageConfigsFromProviderConfig(config) : undefined), [config]);
   const selectedImageConfig = imageConfigs?.[selectedImageAdapterKind];
   const localApiKeyMask = selectedImageConfig?.apiKey.value;
   const hasSavedLocalKey = Boolean(selectedImageConfig?.apiKey.hasSecret);
@@ -296,13 +311,71 @@ export function ProviderConfigDialog({
     };
   }, [onClose]);
 
+  useEffect(() => {
+    if (selectedImageAdapterKind !== "gemini" || isLoading || !config || geminiModelOptions.length > 0) {
+      return;
+    }
+
+    const storage = browserGeminiModelStorage();
+    const cachedModels = cachedGeminiModelOptions(storage, imageForms.gemini.baseUrl);
+    if (cachedModels.length > 0) {
+      setGeminiModelOptions(cachedModels);
+      return;
+    }
+
+    const cacheKey = geminiModelOptionsCacheKey(imageForms.gemini.baseUrl);
+    if (geminiModelAutoLoadKeyRef.current === cacheKey) {
+      return;
+    }
+
+    const savedGeminiConfig = imageConfigs?.gemini;
+    if (!imageForms.gemini.apiKey.trim() && !savedGeminiConfig?.apiKey.hasSecret) {
+      return;
+    }
+
+    geminiModelAutoLoadKeyRef.current = cacheKey;
+    let cancelled = false;
+    void loadImageProviderModels("gemini", imageForms, imageConfigs, locale, t)
+      .then((modelResponse) => {
+        if (cancelled || modelResponse.models.length === 0) {
+          return;
+        }
+
+        cacheGeminiModelOptions(storage, imageForms.gemini.baseUrl, modelResponse.models);
+        setGeminiModelOptions(modelResponse.models);
+      })
+      .catch(() => {
+        // The manual enable flow still reports fetch errors. This background backfill stays quiet.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    config,
+    geminiModelOptions.length,
+    imageConfigs,
+    imageForms,
+    isLoading,
+    locale,
+    selectedImageAdapterKind,
+    t
+  ]);
+
   function applyProviderConfig(nextConfig: ProviderConfigResponse): void {
+    const nextForms = imageFormsFromConfig(nextConfig);
     setConfig(nextConfig);
     setSourceOrder(nextConfig.sourceOrder);
     setSelectedImageAdapterKind(imageAdapterKindFromValue(nextConfig.localOpenAI.imageProviderFormat));
-    setImageForms(imageFormsFromConfig(nextConfig));
+    setImageForms(nextForms);
+    setGeminiModelOptions(cachedGeminiModelOptions(browserGeminiModelStorage(), nextForms.gemini.baseUrl));
+    geminiModelAutoLoadKeyRef.current = null;
     setSelectedVideoKind(nextConfig.video.kind);
     setVideoForms(videoFormsFromConfig(nextConfig));
+    setRequestLogging({
+      image: nextConfig.requestLogging?.image ?? false,
+      video: nextConfig.requestLogging?.video ?? false
+    });
   }
 
   function applyAgentConfig(nextConfig: AgentLlmConfigView): void {
@@ -312,11 +385,18 @@ export function ProviderConfigDialog({
       baseUrl: nextConfig.baseUrl,
       model: nextConfig.model,
       timeoutMs: String(nextConfig.timeoutMs),
-      supportsVision: nextConfig.supportsVision
+      supportsVision: nextConfig.supportsVision,
+      requestLoggingEnabled: nextConfig.requestLoggingEnabled
     });
   }
 
   function updateLocalForm(patch: Partial<LocalProviderFormState>): void {
+    if (selectedImageAdapterKind === "gemini" && Object.hasOwn(patch, "baseUrl")) {
+      const nextBaseUrl = patch.baseUrl ?? imageForms.gemini.baseUrl;
+      setGeminiModelOptions(cachedGeminiModelOptions(browserGeminiModelStorage(), nextBaseUrl));
+      geminiModelAutoLoadKeyRef.current = null;
+    }
+
     setImageForms((current) => ({
       ...current,
       [selectedImageAdapterKind]: {
@@ -329,11 +409,23 @@ export function ProviderConfigDialog({
 
   function updateImageAdapterKind(kind: ImageAdapterKind): void {
     setSelectedImageAdapterKind(kind);
+    if (kind === "gemini") {
+      setGeminiModelOptions(cachedGeminiModelOptions(browserGeminiModelStorage(), imageForms.gemini.baseUrl));
+      geminiModelAutoLoadKeyRef.current = null;
+    }
     setMessage(null);
   }
 
   function updateAgentForm(patch: Partial<AgentLlmFormState>): void {
     setAgentForm((current) => ({
+      ...current,
+      ...patch
+    }));
+    setMessage(null);
+  }
+
+  function updateRequestLogging(patch: Partial<typeof requestLogging>): void {
+    setRequestLogging((current) => ({
       ...current,
       ...patch
     }));
@@ -519,7 +611,8 @@ export function ProviderConfigDialog({
     const body: SaveProviderConfigRequest = {
       sourceOrder,
       ...imageProviderBody,
-      video: videoPayload
+      video: videoPayload,
+      requestLogging
     } as SaveProviderConfigRequest;
     const agentBody: SaveAgentLlmConfigRequest | null = shouldPersistAgentConfig
       ? {
@@ -528,7 +621,8 @@ export function ProviderConfigDialog({
           baseUrl: agentForm.baseUrl.trim(),
           model: agentModel,
           timeoutMs: agentTimeoutMs,
-          supportsVision: agentForm.supportsVision
+          supportsVision: agentForm.supportsVision,
+          requestLoggingEnabled: agentForm.requestLoggingEnabled
         }
       : null;
 
@@ -595,20 +689,30 @@ export function ProviderConfigDialog({
       return;
     }
 
-    const imageProviderBody = buildImageProviderSavePayloadForActiveKind(kind, imageForms, imageConfigs);
-    if (!imageProviderBody) {
-      setMessage({
-        tone: "error",
-        text: t("providerLocalTimeoutInvalid")
-      });
-      return;
-    }
-
     setSelectedImageAdapterKind(kind);
     setIsSaving(true);
     setMessage(null);
 
     try {
+      let formsForSave = imageForms;
+      if (kind === "gemini") {
+        const modelResponse = await loadImageProviderModels(kind, imageForms, imageConfigs, locale, t);
+        if (modelResponse.models.length === 0) {
+          throw new Error(t("providerImageModelsEmpty"));
+        }
+
+        formsForSave = imageFormsWithGeminiModelSelection(imageForms, modelResponse);
+        cacheGeminiModelOptions(browserGeminiModelStorage(), formsForSave.gemini.baseUrl, modelResponse.models);
+        setGeminiModelOptions(modelResponse.models);
+        geminiModelAutoLoadKeyRef.current = geminiModelOptionsCacheKey(formsForSave.gemini.baseUrl);
+        setImageForms(formsForSave);
+      }
+
+      const imageProviderBody = buildImageProviderSavePayloadForActiveKind(kind, formsForSave, imageConfigs);
+      if (!imageProviderBody) {
+        throw new Error(t("providerLocalTimeoutInvalid"));
+      }
+
       const response = await fetch("/api/provider-config", {
         method: "PUT",
         headers: {
@@ -616,7 +720,10 @@ export function ProviderConfigDialog({
         },
         body: JSON.stringify({
           sourceOrder,
-          ...imageProviderBody
+          ...imageProviderBody,
+          requestLogging: {
+            image: requestLogging.image
+          }
         } satisfies SaveProviderConfigRequest)
       });
       if (!response.ok) {
@@ -842,13 +949,29 @@ export function ProviderConfigDialog({
                       </label>
                       <label className="provider-field provider-field--span">
                         <span>{t("providerFieldModel")}</span>
-                        <input
-                          className="provider-field__control"
-                          data-testid="provider-local-model"
-                          name="localOpenAIModel"
-                          value={imageForm.model}
-                          onChange={(event) => updateLocalForm({ model: event.target.value })}
-                        />
+                        {selectedImageAdapterKind === "gemini" && geminiModelOptions.length > 0 ? (
+                          <select
+                            className="provider-field__control"
+                            data-testid="provider-local-model"
+                            name="localOpenAIModel"
+                            value={imageForm.model}
+                            onChange={(event) => updateLocalForm({ model: event.target.value })}
+                          >
+                            {imageModelOptions.map((model) => (
+                              <option key={model.id} value={model.id}>
+                                {model.displayName === model.id ? model.id : `${model.displayName} (${model.id})`}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            className="provider-field__control"
+                            data-testid="provider-local-model"
+                            name="localOpenAIModel"
+                            value={imageForm.model}
+                            onChange={(event) => updateLocalForm({ model: event.target.value })}
+                          />
+                        )}
                       </label>
                       <label className="provider-field">
                         <span>{t("providerTimeoutMs")}</span>
@@ -861,6 +984,15 @@ export function ProviderConfigDialog({
                           value={imageForm.timeoutMs}
                           onChange={(event) => updateLocalForm({ timeoutMs: event.target.value })}
                         />
+                      </label>
+                      <label className="provider-toggle-field provider-toggle-field--span">
+                        <input
+                          checked={requestLogging.image}
+                          data-testid="provider-image-request-logging"
+                          type="checkbox"
+                          onChange={(event) => updateRequestLogging({ image: event.target.checked })}
+                        />
+                        <span>{t("providerRequestLoggingImage")}</span>
                       </label>
                     </div>
                     {hasSavedLocalKey && !imageForm.apiKey ? (
@@ -1218,6 +1350,15 @@ export function ProviderConfigDialog({
                         onChange={(event) => updateVideoForm({ interpolation: event.target.value })}
                       />
                     </label>
+                    <label className="provider-toggle-field provider-toggle-field--span">
+                      <input
+                        checked={requestLogging.video}
+                        data-testid="provider-video-request-logging"
+                        type="checkbox"
+                        onChange={(event) => updateRequestLogging({ video: event.target.checked })}
+                      />
+                      <span>{t("providerRequestLoggingVideo")}</span>
+                    </label>
                   </div>
                   {hasSavedVideoKey && !videoForm.apiKey ? (
                     <div className="provider-secret-pill">
@@ -1306,6 +1447,15 @@ export function ProviderConfigDialog({
                         onChange={(event) => updateAgentForm({ supportsVision: event.target.checked })}
                       />
                       <span>{t("agentConfigSupportsVision")}</span>
+                    </label>
+                    <label className="provider-toggle-field">
+                      <input
+                        checked={agentForm.requestLoggingEnabled}
+                        data-testid="provider-agent-request-logging"
+                        type="checkbox"
+                        onChange={(event) => updateAgentForm({ requestLoggingEnabled: event.target.checked })}
+                      />
+                      <span>{t("providerRequestLoggingAgent")}</span>
                     </label>
                   </div>
                   {hasSavedAgentKey && !agentForm.apiKey ? (
@@ -1530,6 +1680,148 @@ function imageConfigsFromProviderConfig(config: ProviderConfigResponse): Partial
   };
 }
 
+async function loadImageProviderModels(
+  kind: ImageAdapterKind,
+  forms: ImageProviderFormMap,
+  savedConfigs: Partial<Record<ImageAdapterKind, ImageAdapterConfigView>> | undefined,
+  locale: Locale,
+  t: Translate
+): Promise<ImageProviderModelsResponse> {
+  const form = forms[kind];
+  const timeoutMs = Number.parseInt(form.timeoutMs, 10);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(t("providerLocalTimeoutInvalid"));
+  }
+
+  const apiKey = form.apiKey.trim();
+  const body: ImageProviderModelsRequest = {
+    kind: kind as ImageProviderFormat,
+    apiKey,
+    preserveApiKey: !apiKey && Boolean(savedConfigs?.[kind]?.apiKey.hasSecret),
+    baseUrl: form.baseUrl.trim(),
+    timeoutMs
+  };
+
+  const response = await fetch("/api/provider-config/image-models", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new Error(await readProviderConfigError(response, locale, t));
+  }
+
+  return (await response.json()) as ImageProviderModelsResponse;
+}
+
+export function imageFormsWithGeminiModelSelection(
+  forms: ImageProviderFormMap,
+  modelResponse: Pick<ImageProviderModelsResponse, "defaultModel" | "models">
+): ImageProviderFormMap {
+  const selectedModel = modelResponse.defaultModel ?? preferredImageProviderModel(modelResponse.models);
+  if (!selectedModel) {
+    return forms;
+  }
+
+  return {
+    ...forms,
+    gemini: {
+      ...forms.gemini,
+      model: selectedModel
+    }
+  };
+}
+
+export function imageModelSelectOptions(options: ImageProviderModelOption[], currentModel: string): ImageProviderModelOption[] {
+  if (!currentModel || options.some((option) => option.id === currentModel)) {
+    return options;
+  }
+
+  return [
+    {
+      id: currentModel,
+      displayName: currentModel
+    },
+    ...options
+  ];
+}
+
+export function geminiModelOptionsCacheKey(baseUrl: string): string {
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/u, "") || "default";
+  return `${GEMINI_MODEL_OPTIONS_CACHE_PREFIX}${encodeURIComponent(normalizedBaseUrl)}`;
+}
+
+export function cacheGeminiModelOptions(
+  storage: BrowserKeyValueStorage | undefined,
+  baseUrl: string,
+  models: readonly ImageProviderModelOption[]
+): void {
+  if (!storage) {
+    return;
+  }
+
+  const normalizedModels = normalizeGeminiModelOptions(models);
+  try {
+    storage.setItem(geminiModelOptionsCacheKey(baseUrl), JSON.stringify({ models: normalizedModels }));
+  } catch {
+    // Local storage can be unavailable or full; the dropdown still works for the current session.
+  }
+}
+
+export function cachedGeminiModelOptions(storage: Pick<BrowserKeyValueStorage, "getItem"> | undefined, baseUrl: string): ImageProviderModelOption[] {
+  if (!storage) {
+    return [];
+  }
+
+  try {
+    const cachedValue = storage.getItem(geminiModelOptionsCacheKey(baseUrl));
+    if (!cachedValue) {
+      return [];
+    }
+
+    const parsed = JSON.parse(cachedValue) as unknown;
+    const parsedRecord = recordValue(parsed);
+    const models = Array.isArray(parsed) ? parsed : Array.isArray(parsedRecord?.models) ? parsedRecord.models : [];
+    return normalizeGeminiModelOptions(models);
+  } catch {
+    return [];
+  }
+}
+
+function browserGeminiModelStorage(): BrowserKeyValueStorage | undefined {
+  try {
+    return typeof window === "undefined" ? undefined : window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeGeminiModelOptions(models: readonly unknown[]): ImageProviderModelOption[] {
+  const seen = new Set<string>();
+  const normalized: ImageProviderModelOption[] = [];
+  for (const model of models) {
+    const record = recordValue(model);
+    const id = typeof record?.id === "string" ? record.id.trim() : "";
+    if (!id || seen.has(id)) {
+      continue;
+    }
+
+    const displayName = typeof record?.displayName === "string" && record.displayName.trim() ? record.displayName.trim() : id;
+    seen.add(id);
+    normalized.push({
+      id,
+      displayName
+    });
+  }
+  return normalized;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
 function imageFormsFromConfig(config: ProviderConfigResponse): ImageProviderFormMap {
   const imageConfigs = imageConfigsFromProviderConfig(config);
   return IMAGE_ADAPTER_KINDS.reduce<ImageProviderFormMap>((forms, kind) => {
@@ -1706,7 +1998,8 @@ function shouldSaveAgentConfig(form: AgentLlmFormState, hasSavedApiKey: boolean)
       form.apiKey.trim() ||
       form.baseUrl.trim() ||
       form.model.trim() ||
-      form.supportsVision
+      form.supportsVision ||
+      form.requestLoggingEnabled
   );
 }
 
